@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <link href="styles.css" rel="stylesheet" />
+  <link rel="icon" href="/favicon.ico" />
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>VWRT Manager</title>
+  </script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class'
+    };
+  </script>
+  <script>
+    window.addEventListener("DOMContentLoaded", () => {
+      lucide.createIcons(); 
+    });
+  </script>
+</head>
+<body class="bg-gray-100 text-gray-900 dark:bg-gray-900 dark:text-gray-100">
+  <header
+    class="bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-6 py-4 shadow flex justify-between items-center">
+    <h1 class="text-lg font-bold cursor-pointer" onclick="showTab('dashboard')">🔒 VWRT Manager</h1>
+    <div class="header-status flex gap-4 text-sm items-center">
+      <span class="ip-status text-black dark:text-white" id="publicIP">IP: Đang tải...</span>
+      <span class="time-status text-black dark:text-white" id="datetime">--:--</span>
+      <button class="text-xl" id="darkToggle" onclick="toggleDarkMode()" title="Dark Mode"></button>
+      <!-- <button class="text-xl" onclick="window.open(`http://${location.hostname}/cgi-bin/luci/`, '_blank')" title="Mở LuCI">⚙️</button> -->
+      <!-- <button class="refresh-btn" onclick="loadStatus()" title="Làm mới dữ liệu">
+      <i class="icon-refresh" data-lucide="refresh-ccw"></i>
+      </button> -->
+    </div>
+  </header>
+<div style="width: 100%; display: flex; flex-direction: column; align-items: center; margin-top: 1px;">
+  <div id="toggleTabsArrow" class="svg-arrow" title="Chức năng">
+      <svg id="chevronSvg" width="32" height="32" viewBox="0 0 24 24" stroke="#2563eb" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" style="display:block; transition: transform 0.23s;">
+      <polyline points="6 9 12 15 18 9"></polyline>
+    </svg>
+  </div>
+<div id="mainTabs" class="main-tabs" class="flex justify-center gap-4 p-4 margin-top: 1px;">
+  <div class="tab" title="Bảng điều khiển" onclick="showTab('dashboard')">🏠 Trang chủ</div>
+  <div class="tab" title="Quản lý thiết bị" onclick="showTab('device')">💻 Thiết bị</div>
+  <div class="tab" title="Danh sách Proxy" onclick="showTab('proxy')">🖥 Proxy</div>
+  <div class="tab" title="Cài đặt hệ thống" onclick="showTab('settings')">⚙️ Cài đặt</div>
+</div>
+  <div class="container flex flex-col gap-4 p-2 md:p-4">
+    <!-- 📋 Nút mở Log nổi -->
+<button id="logDockBtn"
+  onclick="toggleLogPanel()"
+  title="Xem log">
+  <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M16 19l-7-7 7-7" />
+  </svg>
+  <span>📋</span>
+</button>
+    <!-- 📋 Khung log nổi -->
+    <div id="logPanel" class="fixed bottom-20 right-6 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 
+         rounded-lg shadow-lg p-4 w-[90vw] sm:w-[500px] max-h-[60vh] overflow-y-auto hidden z-50 text-sm">
+      <div class="flex justify-between items-center mb-2">
+        <h2 class="font-semibold text-sm">📋 Log hệ thống</h2>
+        <button class="text-gray-500 hover:text-red-500" onclick="toggleLogPanel()">✖</button>
+      </div>
+      <!-- ✅ Thông tin nhanh -->
+      <div class="text-xs text-gray-700 dark:text-gray-300 mb-3 space-y-1" id="quick-status"></div>
+      <!-- 📋 Dòng log -->
+      <pre
+        class="system-log text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap break-words leading-snug max-h-48 overflow-y-auto"></pre>
+    </div>
+    <!-- 🧠 DASHBOARD LAYOUT: router info ở trên, trạng thái + thiết bị chia 2 cột phía dưới -->
+    <div class="tab-content" id="tab-dashboard" style="display: none;">
+      <!-- 📡 Trạng thái hệ thống từ status.sh -->
+      <div class="grid grid-cols-1 gap-4 p-4">
+        <!-- Grid 3 cột: Router / RAM / ROM -->
+        <div class="grid grid-cols-1 md:grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          <!-- Card: Thông tin Router -->
+          <div class="card">
+            <h2 class="font-semibold text-lg mb-2">🛠️ Thông tin cơ bản</h2>
+            <div class="space-y-1 text-sm">
+              <div class="flex justify-between"><span class="font-semibold">🖥️ Hostname</span><span
+                  id="hostname">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">📦 Model</span><span id="model">...</span>
+              </div>
+              <div class="flex justify-between"><span class="font-semibold">⏳ Uptime</span><span id="uptime">...</span>
+              </div>
+              <div class="flex justify-between"><span class="font-semibold">🧬 Kernel</span><span id="kernel">...</span>
+              </div>
+              <div class="flex justify-between"><span class="font-semibold">🧾 Phiên bản</span><span
+                  id="version">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">⚙️ Tải CPU</span><span
+                  id="loadavg">...</span></div>
+            </div>
+          </div>
+          <!-- Card: RAM -->
+          <div class="card">
+            <h2 class="font-semibold text-lg mb-2">🧠 Bộ nhớ (RAM)</h2>
+            <div class="text-sm space-y-1">
+              <div class="flex justify-between"><span class="font-semibold">RAM tổng</span><span
+                  id="ram-total">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">RAM đã dùng</span><span
+                  id="ram-used">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">RAM buffer</span><span
+                  id="ram-buffer">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">RAM cache</span><span
+                  id="ram-cache">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">Sử dụng</span><span
+                  id="ram-percent">...</span></div>
+            </div>
+<div class="w-full bg-gray-300 rounded-full h-3 mt-3">
+  <div class="bg-blue-600 h-3 rounded-full ram-progress-bar" style="width: 0%"></div>
+</div>
+<p class="text-xs text-right text-gray-600 dark:text-gray-400 mt-1" id="ram-text">
+  <!-- JS sẽ fill lại -->
+</p>
+          </div>
+          <!-- Card: ROM -->
+          <div class="card">
+            <h2 class="font-semibold text-lg mb-2">💾 Bộ nhớ lưu trữ (ROM)</h2>
+            <div class="text-sm space-y-1">
+              <div class="flex justify-between"><span class="font-semibold">Dung lượng</span><span
+                  id="rom-total">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">Còn trống</span><span
+                  id="rom-free">...</span></div>
+              <div class="flex justify-between"><span class="font-semibold">Đã dùng</span><span id="rom-used">...</span>
+              </div>
+              <div class="flex justify-between"><span class="font-semibold">Sử dụng</span><span
+                  id="rom-percent">...</span></div>
+            </div>
+<div class="w-full bg-gray-300 rounded-full h-3 mt-3">
+  <div class="bg-indigo-500 h-3 rounded-full rom-progress-bar" style="width: 0%"></div>
+</div>
+<p class="text-xs text-right text-gray-600 dark:text-gray-400 mt-1" id="rom-text">
+  <!-- JS sẽ fill lại -->
+</p>
+          </div>
+        </div>
+        <!-- Grid 2 cột: Proxy Status + Device List -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Trạng thái proxy -->
+          <div class="card p-4 rounded-lg shadow bg-white dark:bg-gray-800 h-fit p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2">
+                <i class="w-5 h-5 text-blue-500" data-lucide="server"></i>
+                <h2 class="font-semibold text-lg">Trạng thái Proxy</h2>
+              </div>
+              <label class="switch">
+                <input id="main-proxy-switch" type="checkbox" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="space-y-2 text-base">
+              <div class="flex justify-between">
+                <span class="text-gray-700 font-medium">Tổng proxy:</span>
+                <span class="font-semibold" id="proxy-total">0</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-green-600 font-medium">Hoạt động:</span>
+                <span class="font-semibold text-green-600" id="proxy-online">0 ✅</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-red-500 font-medium">Lỗi:</span>
+                <span class="font-semibold text-red-500" id="proxy-offline">0 ❌</span>
+              </div>
+ <div class="flex justify-end mt-3">
+    <button onclick="showTab('proxy')" class="text-blue-600 hover:underline text-sm">→ Xem tất cả Proxy</button>
+            </div>
+            </div>
+          </div>
+          <!-- Thiết bị kết nối -->
+          <div class="card p-4 rounded-lg shadow bg-white dark:bg-gray-800 h-full p-4">
+            <div class="flex justify-between items-center mb-2">
+              <h2 class="font-semibold text-sm" id="device-count-title">📶 Thiết bị kết nối</h2>
+              <button
+                class="text-xs px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600"
+                onclick="showTab('device')">Xem tất cả</button>
+            </div>
+            <div class="space-y-1 text-sm mt-2 max-h-[180px] overflow-y-auto pr-1" id="connected-device-list">
+              <!-- max-h-[180px] // ~3 thiết bị -->
+              <div class="text-gray-500 italic">Đang tải danh sách thiết bị...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tab-content" id="tab-proxy" style="display: none;">
+      <div class="card">
+        <div class="card-row">
+          <span>🔌 Hệ thống Proxy</span>
+          <label class="switch">
+            <input checked="" id="mainSwitch" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="flex justify-between items-center mb-2 flex-wrap gap-2">
+        <div class="flex gap-2 items-center proxy-actions">
+          <button onclick="openModal()">➕ Thêm proxy</button>
+          <button onclick="openBatchModal()">📝 Thêm danh sách proxy</button>
+        </div>
+        <!-- Hành động bên phải: tìm kiếm, hiện IP, xóa -->
+<div class="flex gap-2 flex-wrap items-center proxy-actions">
+  <div class="relative">
+    <input type="text" id="proxy-search" class="input input-sm w-48" placeholder="🔍 Tìm proxy..." oninput="filterProxies()" />
+    <button type="button" id="clearFilterBtn"
+      class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+      style="display:none;"
+      onclick="clearProxyFilter()">&times;</button>
+  </div>
+  <select id="proxy-type-filter" class="input input-sm w-24" onchange="filterProxies()">
+    <option value="">Tất cả loại</option>
+    <option value="http">HTTP</option>
+    <option value="socks">SOCKS</option>
+  </select>
+  <select id="proxy-status-filter" class="input input-sm w-24" onchange="filterProxies()">
+    <option value="">Tất cả trạng thái</option>
+    <option value="online">Online</option>
+    <option value="offline">Offline</option>
+  </select>
+  <div id="proxy-count" class="text-sm text-gray-500 ml-2"></div>
+          <button class="icon-btn" onclick="toggleIpSelected()" id="toggle-ip-btn" style="display: none;">👁️</button>
+          <button class="icon-btn" onclick="deleteSelectedProxies()" id="delete-btn" style="display: none;">🗑️</button>
+          <button class="icon-btn" onclick="toggleSelectAll()" id="select-all-btn">✅</button>
+        </div>
+      </div>
+      <div class="card p-4 space-y-2">
+        <!-- <h2 class="font-semibold text-lg">🖥 Danh sách Proxy</h2> -->
+        <div id="proxy-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <!-- Proxy cards sẽ được thêm bằng JS -->
+        </div>
+      </div> <!-- Kết thúc khung Proxy List -->
+    </div> <!-- Kết thúc tab-proxy -->
+    <div id="tab-device" class="tab-content hidden space-y-4">
+      <div class="flex justify-between items-center mb-2 flex-wrap gap-2 proxy-actions">
+        <div class="flex gap-2 items-center">
+          <button onclick="openDeviceModal()">➕Thêm giao diện mới</button>
+          <button onclick="openWifiModal()">➕Thêm WiFi</button>
+          <button onclick="openACLModal()">➕Thêm quy tắc proxy</button>
+        </div>
+        <div class="flex justify-between items-center mb-2 flex-wrap gap-2 proxy-actions">
+<input type="text" id="device-search" class="input input-sm w-48" placeholder="🔍 Tìm thiết bị..." oninput="onSearchInput()">
+          <!-- <button class="icon-btn" onclick="deleteSelectedDevices()" title="Xoá đã chọn">🗑️</button>
+          <button class="icon-btn" onclick="toggleSelectAllDevices()" title="Chọn tất cả">✅</button> -->
+        </div>
+      </div>
+      <div class="card p-4 space-y-2">
+        <!-- <h2 class="font-semibold text-lg">💻 Danh sách Thiết bị</h2> -->
+          <!-- Tabs phụ -->
+<div class="flex gap-2 border-b pb-2 mb-4 text-sm" id="device-subtabs">
+    <button class="subtab active" onclick="showDeviceSubtab('all')">📋 Tất cả</button>
+    <button class="subtab" onclick="showDeviceSubtab('interface')">🌐 Giao diện</button>
+    <button class="subtab" onclick="showDeviceSubtab('wifi')">📶 WiFi</button>
+    <button class="subtab" onclick="showDeviceSubtab('acl')">🛡️ Truy cập Proxy</button>
+</div>
+<div id="deviceMappingContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+  <!-- Kết quả sẽ được render vào đây -->
+</div>
+  </div>
+  </div>
+    <!-- setting -->
+<div class="tab-content" id="tab-settings" style="display:none">
+  <!-- Giao diện hệ thống -->
+  <div class="settings-block">
+    <div class="settings-block-title">
+      <span class="settings-block-icon">🎛️</span>
+      <span>Giao diện hệ thống</span>
+    </div>
+    <div class="settings-block-body">
+      <label for="uiSelector" class="mb-0 font-medium">Chuyển giao diện:</label>
+      <div class="flex items-center gap-2">
+        <select id="uiSelector" class="form-select">
+          <option value="vwrt">VWRT Manager</option>
+          <option value="luci">LuCI (OpenWrt gốc)</option>
+        </select>
+        <button onclick="switchUI()" class="btn btn-primary flex items-center gap-1">
+          <span class="btn-icon">🔁</span>Chuyển
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quản trị thiết bị -->
+  <div class="settings-block">
+    <div class="settings-block-title">
+      <span class="settings-block-icon">🔌</span>
+      <span>Quản trị thiết bị</span>
+    </div>
+
+    <!-- Reboot router -->
+    <div class="settings-block-body">
+      <label class="mb-0 font-medium">Khởi động lại router:</label>
+      <div>
+        <button onclick="rebootRouter()" class="danger flex items-center gap-1">
+          <span class="btn-icon">🔄</span>Reboot
+        </button>
+      </div>
+    </div>
+
+    <!-- Restart service -->
+    <div class="settings-block-body">
+      <label class="mb-0 font-medium">Khởi động lại dịch vụ:</label>
+      <div class="flex items-center gap-2">
+        <select id="svcSelector" class="form-select">
+          <option value="passwall2">Proxy</option>
+          <option value="network">Mạng</option>
+          <option value="uhttpd">Web (uhttpd)</option>
+          <option value="nginx">Web (nginx)</option>
+        </select>
+        <button onclick="restartService()" class="btn btn-primary flex items-center gap-1">
+          <span class="btn-icon">🧹</span>Restart
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cập nhật - Đổi port -->
+  <div class="settings-block">
+    <div class="settings-block-title">
+      <span class="settings-block-icon">🌐</span>
+      <span>Cập nhật - Đổi port</span>
+    </div>
+
+    <!-- Thay đổi port -->
+    <div class="settings-block-body">
+      <label for="uiPort" class="mb-0 font-medium">Thiết lập port:</label>
+      <div class="flex items-center gap-2">
+        <input id="uiPort" type="text" class="form-input w-28" min="1" max="65535" placeholder="VD: 8080"
+          title="Nhập port bạn muốn đổi cho dashboard (1~65535)">
+        <button onclick="changeUIPort()" class="btn btn-primary flex items-center gap-1">
+          <span class="btn-icon">🔗</span>Đổi port</button>
+      </div>
+    </div>
+
+    <!-- Cập nhật -->
+    <div class="settings-block-body">
+      <label for="updateBtn" class="mb-0 font-medium">Cập nhật VWRT Manager:</label>
+      <div>
+        <button id="updateBtn" onclick="updateWRTManager()" class="btn btn-primary flex items-center gap-1">
+          <span class="btn-icon">⬆️</span>Update
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+  <!-- Modal: Thêm proxy đơn lẻ -->
+  <div class="modal" id="proxyModal">
+    <div class="modal-content">
+      <h3 class="text-lg font-bold text-blue-700 dark:text-blue-400">Thêm/Sửa Proxy Mới</h3>
+      <!-- Tạo nhanh ở dòng riêng bên dưới -->
+      <div class="mb-3">
+        <label class="block text-sm text-gray-700 dark:text-gray-300 mb-1">📥 Nhập nhanh dạng ip:port:user:pass</label>
+        <div class="flex gap-2">
+          <input id="quick-add-input" type="text" placeholder="ip:port:user:pass" class="input input-sm w-full" />
+          <button onclick="parseQuickAdd()"
+            class="px-3 py-1 rounded bg-blue-600 text-white text-sm hover:bg-blue-700">📥</button>
+        </div>
+      </div>
+      <label for="proxy-remarks">Tên hiển thị:</label>
+      <input type="text" id="proxy-remarks" placeholder="VD: Proxy Nhật Bản" />
+      <label>Giao thức:</label>
+      <select id="proxy-type">
+        <option value="http" selected>HTTP</option>
+        <option value="socks">SOCKS</option>
+      </select>
+      </select>
+      <label>Server:</label>
+      <input id="proxy-ip" type="text" placeholder="proxy.example.com" />
+      <label>Port:</label>
+      <input id="proxy-port" type="text" min="1" max="65535" placeholder="1080" />
+      <label>Username:</label>
+      <input id="proxy-user" type="text" placeholder="Tên đăng nhập (nếu có)" />
+      <label>Password:</label>
+      <div class="relative">
+        <input id="proxy-password" name="pass" id="proxy-password" type="password" placeholder="Mật khẩu Proxy"
+          class="w-full pr-10" />
+        <button type="button" onclick="toggleInputPw()"
+          class="absolute inset-y-0 right-2 flex items-center text-gray-600">👁️</button>
+      </div>
+      <div class="modal-buttons">
+        <button onclick="closeModal()">Hủy</button>
+        <button>Lưu</button> 
+      </div>
+    </div>
+  </div>
+  <!-- Modal: Thêm proxy danh sách -->
+  <div class="modal" id="batchModal">
+    <div class="modal-content">
+      <h3 class="text-lg font-bold text-blue-700 dark:text-blue-400">📥 Thêm Danh Sách Proxy</h3>
+      <p>Nhập theo dòng, định dạng: <code>ip:port:user:pass</code> hoặc <code>ip:port</code></p>
+      <label for="proxy-protocol" class="block font-semibold mb-1">Chọn giao thức:</label>
+      <select id="proxy-protocol" required class="input w-full mb-2">
+        <option value="">-- Chọn --</option>
+        <option value="http">HTTP</option>
+        <option value="socks">SOCKS</option>
+      </select>
+      <textarea id="proxy-list-text" class="input w-full mb-2" rows="8" 
+      placeholder="192.168.1.1:1080:user1:pass1 192.168.1.2:1080"></textarea>
+      <label class="block mt-2">Hoặc tải file .txt:</label>
+      <input type="file" id="proxy-file" accept=".txt" class="mb-4" />
+      <div class="modal-buttons">
+        <button onclick="closeBatchModal()">Hủy</button>
+        <button onclick="importProxyList()">Lưu</button>
+      </div>
+    </div>
+  </div>
+    <!-- Modal: Thêm thiết bị mới -->
+<div class="modal" id="deviceModal">
+  <div class="modal-content">
+    <h3>Thêm/Sửa giao diện mới</h3>
+    <form id="add-interface-form">
+      <label>Tên giao diện:</label>
+      <input name="iface" type="text" placeholder="proxy2" required />
+      <label>IP Address:</label>
+      <input name="ipaddr" type="text" placeholder="192.168.10.1" required />
+      <label>Netmask:</label>
+<select id="netmask-select" name="netmask_select" onchange="toggleNetmaskInput(this)">
+  <option value="255.255.255.0">255.255.255.0</option>
+  <option value="255.255.0.0">255.255.0.0</option>
+  <option value="255.0.0.0">255.0.0.0</option>
+  <option value="custom">Tùy chọn khác...</option>
+</select>
+<input style="display:none;margin-top:6px;" type="text" id="netmask-custom" name="netmask" placeholder="Nhập Netmask khác..." />
+  <!-- ...thêm tuỳ ý... -->
+</datalist>      
+<label>DNS (tuỳ chọn):</label>
+      <input name="dns" type="text" placeholder="8.8.8.8" />
+      <div class="modal-buttons">
+        <button type="button" onclick="closeDeviceModal()">Huỷ</button>
+        <button type="submit">Lưu</button>
+      </div>
+      <div id="add-interface-error" style="color:red; margin-top:10px;"></div>
+    </form>
+  </div>
+</div>
+  <!-- Modal: Thêm WiFi -->
+<div class="modal" id="wifiModal">
+  <div class="modal-content">
+    <form id="add-wifi-form" autocomplete="off">
+      <h3>Thêm WiFi</h3>
+      <label>Tên WiFi:</label>
+      <input id="wifiSSID" placeholder="Tên WiFi" type="text" />
+      <label>Mã hóa:</label>
+      <select id="wifiEncryption">
+        <option value="psk2">WPA2-PSK (an toàn)</option>
+        <option value="psk-mixed">WPA2/WPA-PSK Mixed Mode</option>
+        <option value="psk">WPA-PSK (cũ)</option>
+        <option value="sae">WPA3-SAE (hiện đại)</option>
+        <option value="owe">OWE (open network)</option>
+        <option value="none">Không mã hóa (open)</option>
+      </select>
+      <div id="wifiPasswordGroup">
+        <label>Mật khẩu WiFi:</label>
+        <div style="display: flex; gap: 0.5rem;">
+          <input id="wifiPassword" minlength="8" placeholder="Tối thiểu 8 ký tự" type="password" />
+          <button onclick="toggleWifiPassword();return false;" type="button">👁️</button>
+        </div>
+      </div>
+      <label>Băng tần:</label>
+      <div class="band-toggle">
+        <input checked id="band24" name="band" type="radio" value="2.4GHz" />
+        <label for="band24">2.4GHz</label>
+        <input id="band5" name="band" type="radio" value="5GHz" />
+        <label for="band5">5GHz</label>
+      </div>
+      <label>Mode:</label>
+      <select id="wifiOpMode"></select>
+      <label>Width:</label>
+      <select id="wifiWidth"></select>
+      <label>Channel:</label>
+      <select id="wifiChannelSelect" name="channel"></select>
+      <label>Địa chỉ MAC:</label>
+      <div style="display: flex; gap: 0.5rem;">
+        <input id="wifiMac" placeholder="Ví dụ: 02:11:22:33:44:55" type="text">
+        <button onclick="document.getElementById('wifiMac').value = generateRandomMAC();return false;">🎲</button>
+      </div>
+      <hr class="my-4" />
+      <label class="font-semibold block mb-1">Chọn giao diện gán cho WiFi:</label>
+      <select name="interface" required id="wifi-interface-select" class="form-select w-full">
+        <!-- JS sẽ thêm option -->
+      </select>
+      <div class="modal-buttons">
+        <button type="button" onclick="closeWifiModal()">Hủy</button>
+        <button type="submit">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+<!-- Modal ACL Passwall2 -->
+<div class="modal" id="aclModal" style="display: none;">
+  <div class="modal-content" style="max-width: 520px;">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="text-lg font-bold text-blue-700 dark:text-blue-400">Thêm/Sửa quy tắc proxy</h3>
+    </div>
+    <form id="acl-form">
+      <!-- Enable -->
+      <div class="checkbox-row mb-2">
+         <input type="checkbox" id="acl-enable" checked>
+        <label for="acl-enable">Enable</label>
+      </div>
+      <!-- Remarks -->
+      <label for="acl-remarks">Tên:</label>
+      <input type="text" id="acl-remarks" placeholder="Tên rule" class="input input-sm w-full mb-2" required>
+      <!-- Sources -->
+<label for="acl-sources">Thiết bị áp dụng:</label>
+<div id="acl-sources-wrapper" class="dynamic-list border rounded p-2 mb-2" style="max-height: 150px; overflow-y: auto;">
+  <div class="item flex gap-2 mb-1">
+    <input type="text" class="input source-item flex-grow" placeholder="Nhập IP, MAC, CIDR, ipset...">
+    <button type="button" class="remove-btn px-2 rounded bg-red-500 text-white hover:bg-red-600" onclick="removeSourceItem(this)">×</button>
+  </div>
+</div>
+<button id="add-source-btn" type="button" class="btn btn-secondary mb-2">+ Thêm</button>
+<div class="text-sm text-gray-500">
+  <p>Ví dụ:</p>
+  <ul class="list-disc ml-5">
+    <li>MAC: 00:00:00:FF:FF:FF</li>
+    <li>IP: 192.168.1.100</li>
+    <li>IP CIDR: 192.168.1.0/24</li>
+    <li>IP range: 192.168.1.100-192.168.1.200</li>
+    <li>IPSet: ipset:lanlist</li>
+  </ul>
+</div>
+      <!-- Node/Proxy -->
+      <label for="acl-node">Proxy:</label>
+      <select id="acl-node" class="input input-sm w-full mb-2">
+        <option value="default"></option>
+        <!-- Thêm node qua JS -->
+      </select>
+      <!-- Remote DNS Protocol (Node = default) -->
+      <div id="acl-remote-dns-proto-wrap" class="mb-2">
+        <label for="acl-remote-dns-protocol">Giao thức DNS nâng cao:</label>
+        <select id="acl-remote-dns-protocol" class="input input-sm w-full">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="doh">DoH</option>
+        </select>
+      </div>
+      <!-- TCP/UDP No Redir Ports -->
+<div class="flex flex-col md:flex-row gap-2">
+  <div class="flex-1">
+    <label for="acl-tcp-no-redir">TCP bỏ qua:</label>
+    <select id="acl-tcp-no-redir" class="input input-sm w-full mb-2">
+      <option value="default">Use global config(disable)</option>
+      <option value="1:65535">All (1:65535)</option>
+      <option value="80,443">80,443</option>
+      <option value="custom">Custom...</option>
+    </select>
+    <input type="text" id="acl-tcp-no-redir-custom" class="input input-sm w-full mb-2" placeholder="Nhập port tuỳ chỉnh" style="display:none;">
+  </div>
+  <div class="flex-1">
+    <label for="acl-udp-no-redir">UDP bỏ qua:</label>
+    <select id="acl-udp-no-redir" class="input input-sm w-full mb-2">
+      <option value="default">Use global config(disable)</option>
+      <option value="1:65535">All (1:65535)</option>
+      <option value="80,443">80,443</option>
+      <option value="custom">Custom...</option>
+    </select>
+    <input type="text" id="acl-udp-no-redir-custom" class="input input-sm w-full mb-2" placeholder="Nhập port tuỳ chỉnh" style="display:none;">
+  </div>
+</div>
+
+<div class="flex flex-col md:flex-row gap-2">
+  <div class="flex-1">
+    <label for="acl-tcp-redir">TCP xử lý:</label>
+    <select id="acl-tcp-redir" class="input input-sm w-full mb-2">
+      <option value="default">Use global config (22,25,53,143,465,587,853,993,995,80,443)</option>
+      <option value="1:65535">All (1:65535)</option>
+      <option value="22,25,53,143,465,587,853,993,995,80,443">Common Use</option>
+      <option value="80,443">80,443</option>
+      <option value="custom">Custom...</option>
+    </select>
+    <input type="text" id="acl-tcp-redir-custom" class="input input-sm w-full mb-2" placeholder="Nhập port tuỳ chỉnh" style="display:none;">
+  </div>
+  <div class="flex-1">
+    <label for="acl-udp-redir">Cổng UDP xử lý:</label>
+    <select id="acl-udp-redir" class="input input-sm w-full mb-2">
+      <option value="default">Use global config (1:65535)</option>
+      <option value="1:65535">All (1:65535)</option>
+      <option value="custom">Custom...</option>
+    </select>
+    <input type="text" id="acl-udp-redir-custom" class="input input-sm w-full mb-2" placeholder="Nhập port tuỳ chỉnh" style="display:none;">
+  </div>
+</div>
+      <!-- Remote DNS (protocol: tcp/udp) -->
+      <div id="acl-remote-dns-wrap" class="mb-2">
+        <label for="acl-remote-dns">Remote DNS:</label>
+      <input type="text" id="acl-remote-dns" list="remote-dns-list" placeholder="1.1.1.1" value="1.1.1.1" class="input input-sm w-full">
+        <datalist id="remote-dns-list">
+          <option value="1.1.1.1">1.1.1.1 (CloudFlare)</option>
+          <option value="1.1.1.2">1.1.1.2 (CloudFlare-Security)</option>
+          <option value="8.8.4.4">8.8.4.4 (Google)</option>
+          <option value="8.8.8.8">8.8.8.8 (Google)</option>
+          <option value="9.9.9.9">9.9.9.9 (Quad9-Recommended)</option>
+          <option value="149.112.112.112">149.112.112.112 (Quad9-Recommended)</option>
+          <option value="208.67.220.220">208.67.220.220 (OpenDNS)</option>
+          <option value="208.67.222.222">208.67.222.222 (OpenDNS)</option>
+        </datalist>
+      </div>
+      <!-- Remote DNS DoH (protocol: doh) -->
+      <div id="acl-remote-dns-doh-wrap" class="mb-2" style="display:none;">
+        <label for="acl-remote-dns-doh">Remote DNS DoH:</label>
+        <input type="text" id="acl-remote-dns-doh" list="remote-dns-doh-list" placeholder="https://1.1.1.1/dns-query" class="input input-sm w-full">
+        <datalist id="remote-dns-doh-list">
+          <option value="https://1.1.1.1/dns-query">CloudFlare</option>
+          <option value="https://1.1.1.2/dns-query">CloudFlare-Security</option>
+          <option value="https://8.8.4.4/dns-query">Google 8844</option>
+          <option value="https://8.8.8.8/dns-query">Google 8888</option>
+          <option value="https://9.9.9.9/dns-query">Quad9-Recommended 9.9.9.9</option>
+          <option value="https://149.112.112.112/dns-query">Quad9-Recommended 149.112.112.112</option>
+          <option value="https://208.67.222.222/dns-query">OpenDNS</option>
+          <option value="https://dns.adguard.com/dns-query,176.103.130.130">AdGuard</option>
+          <option value="https://doh.libredns.gr/dns-query,116.202.176.26">LibreDNS</option>
+          <option value="https://doh.libredns.gr/ads,116.202.176.26">LibreDNS (No Ads)</option>
+        </datalist>
+      </div>
+      <!-- Remote DNS Outbound (protocol: tcp/udp/doh) -->
+      <div id="acl-remote-dns-detour-wrap" class="mb-2">
+        <label for="acl-remote-dns-detour">Remote DNS Outbound:</label>
+        <select id="acl-remote-dns-detour" class="input input-sm w-full">
+          <option value="remote">Remote</option>
+          <option value="direct">Direct</option>
+        </select>
+      </div>
+      <!-- FakeDNS (protocol: tcp/udp/doh) -->
+      <div id="acl-fakedns-wrap" class="checkbox-row mb-2">
+        <input type="checkbox" id="acl-fakedns-enable">
+        <label for="acl-fakedns-enable">WebRTC (Chặn DNS giải IP nội bộ)</label>
+      </div>
+      <!-- Remote Query Strategy (protocol: tcp/udp/doh) -->
+      <div id="acl-remote-dns-query-strategy-wrap" class="mb-2">
+        <label for="acl-remote-dns-query-strategy">Remote DNS Query Strategy:</label>
+        <select id="acl-remote-dns-query-strategy" class="input input-sm w-full">
+          <option value="UseIP">UseIP</option>
+          <option value="UseIPv4">UseIPv4</option>
+          <option value="UseIPv6">UseIPv6</option>
+        </select>
+      </div>
+      <!-- Domain Override (Node là Xray, nâng cao - thường hidden) -->
+      <div id="acl-dns-hosts-wrap" class="mb-2" style="display:none;">
+        <label for="acl-dns-hosts">Domain Override (nâng cao):</label>
+        <textarea id="acl-dns-hosts" rows="2" placeholder="domain.com 1.2.3.4" class="input input-sm w-full"></textarea>
+      </div>
+      <!-- Ghi IPSet trực tiếp (Node = default) -->
+<div id="acl-write-ipset-direct-wrap" class="checkbox-row mb-2">
+  <input type="checkbox" id="acl-write-ipset-direct" checked>
+  <label for="acl-write-ipset-direct">Ghi IPSet trực tiếp (nâng cao)</label>
+</div>
+      <div class="modal-buttons mt-4 flex gap-4">
+        <button type="button" onclick="closeACLModal()">Hủy</button>
+        <button type="submit" class="btn btn-primary">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>
+  <script src="vwrtfinal.js"></script>
+  <!-- <script src="vwrtdev.js"></script> -->
+      <script>
+    window.vwrt_mac = '00:11:22:33:44:55';
+  </script>
+</body>
+<footer id="copyright-footer"
+style="position:fixed;left:0;right:0;bottom:0;margin:0 auto;width:auto;z-index:70;text-align:center;
+         font-size:14px;color:#666;padding:8px 0;
+         background:rgba(255,255,255,0.8);backdrop-filter:blur(2px);box-shadow:0 -2px 12px #0001;transition:bottom 0.25s;">
+  © <b>VWRT Manager</b> – Bản quyền và phát triển bởi 
+  <a href="https://www.facebook.com/vietter.99" target="_blank" rel="noopener"
+        style="color:#1877f2;text-decoration:underline;font-weight:500">Vietter</a>
+</footer>
+</html>
