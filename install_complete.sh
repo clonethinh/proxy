@@ -1,13 +1,85 @@
 #!/bin/sh
 # install_complete.sh - Script cài đặt hoàn chỉnh EM9190 Monitor
 
-set -e
-
-INSTALL_DIR="/usr/share/em9190-monitor"
-WEB_DIR="/www/em9190" # Thư mục web server riêng cho EM9190 Monitor
+# --- Cài đặt mặc định ---
+DEFAULT_INSTALL_DIR="/usr/share/em9190-monitor"
+DEFAULT_WEB_DIR="/www/em9190"
+DEFAULT_PORT=9999
 CONFIG_NAME="uhttpd_em9190"
 
-echo "🚀 Cài đặt EM9190 Monitor (Thư mục: $INSTALL_DIR, Port: 9999)..."
+# --- Parse các tùy chọn dòng lệnh ---
+INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+WEB_DIR="${WEB_DIR:-$DEFAULT_WEB_DIR}"
+PORT="${PORT:-$DEFAULT_PORT}"
+
+# --- Parse tùy chọn port nếu được cung cấp ---
+if [ "$1" = "--port" ] && [ -n "$2" ]; then
+    PORT="$2"
+    shift 2
+elif [ "$1" = "--install-dir" ] && [ -n "$2" ]; then
+    INSTALL_DIR="$2"
+    shift 2
+elif [ "$1" = "--web-dir" ] && [ -n "$2" ]; then
+    WEB_DIR="$2"
+    shift 2
+fi
+
+# --- Kiểm tra các gói cần thiết ---
+echo "🔍 Kiểm tra dependencies..."
+MISSING_DEPS=""
+
+# Kiểm tra sự tồn tại của sms_tool
+if ! command -v sms_tool >/dev/null 2>&1; then
+    MISSING_DEPS="$MISSING_DEPS sms-tool"
+fi
+
+# Kiểm tra sự tồn tại của uhttpd
+if ! command -v uhttpd >/dev/null 2>&1; then
+    MISSING_DEPS="$MISSING_DEPS uhttpd"
+fi
+
+# Cố gắng cài đặt nếu thiếu và có kết nối internet
+if [ -n "$MISSING_DEPS" ]; then
+    echo "WARNING: Missing required packages: $MISSING_DEPS"
+    echo "Attempting to install missing packages..."
+    
+    # Check for internet connection
+    if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        echo "Internet connection detected. Running 'opkg update' and installing..."
+        if opkg update; then
+            echo "opkg update successful. Installing missing packages..."
+            # Install all missing deps in one go for efficiency
+            opkg install $MISSING_DEPS
+            
+            # Re-check if installation was successful
+            if ! command -v sms_tool >/dev/null 2>&1 || ! command -v uhttpd >/dev/null 2>&1; then
+                MISSING_DEPS="" # Clear missing deps if they were successfully installed
+                echo "INFO: All dependencies seem to be installed now."
+            else
+                # If still missing after install attempt, report it
+                if ! command -v sms_tool >/dev/null 2>&1; then MISSING_DEPS="$MISSING_DEPS (sms-tool install failed)"; fi
+                if ! command -v uhttpd >/dev/null 2>&1; then MISSING_DEPS="$MISSING_DEPS (uhttpd install failed)"; fi
+                echo "ERROR: Failed to install one or more dependencies. Please install manually:"
+                echo "       opkg update && opkg install $MISSING_DEPS"
+                exit 1
+            fi
+        else
+            echo "ERROR: 'opkg update' failed. Cannot install dependencies."
+            echo "Please install manually: opkg update && opkg install $MISSING_DEPS"
+            exit 1
+        fi
+    else
+        echo "ERROR: No internet connection. Cannot install dependencies."
+        echo "Please install manually: opkg update && opkg install $MISSING_DEPS"
+        exit 1
+    fi
+fi
+echo "✅ Dependencies are satisfied."
+
+
+set -e # Exit immediately if a command exits with a non-zero status.
+
+echo "🚀 Cài đặt EM9190 Monitor (Thư mục: $INSTALL_DIR, Port: $PORT)..."
 
 # --- Kiểm tra quyền root ---
 if [ "$(id -u)" != "0" ]; then
@@ -27,168 +99,157 @@ cat > "$WEB_DIR/api.cgi" << 'EOF'
 # CGI API handler cho EM9190 Monitor
 
 # --- Cấu hình Header ---
-# Set headers cho JSON response và hỗ trợ CORS (Cross-Origin Resource Sharing)
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache, no-store, must-revalidate"
 echo "Pragma: no-cache"
 echo "Expires: 0"
-echo "Access-Control-Allow-Origin: *" # Cho phép mọi domain truy cập
-echo "Access-Control-Allow-Methods: GET, POST, OPTIONS" # Các phương thức HTTP được phép
-echo "Access-Control-Allow-Headers: Content-Type" # Các header được phép
-echo "" # Kết thúc phần header
+echo "Access-Control-Allow-Origin: *"
+echo "Access-Control-Allow-Methods: GET, POST, OPTIONS"
+echo "Access-Control-Allow-Headers: Content-Type"
+echo ""
 
 # --- Xử lý OPTIONS Request ---
-# Các trình duyệt gửi request OPTIONS trước khi gửi request chính (ví dụ: POST, PUT)
-# để kiểm tra quyền truy cập (CORS preflight). Ta chỉ cần trả về thành công cho request này.
 if [ "$REQUEST_METHOD" = "OPTIONS" ]; then
     exit 0
 fi
 
 # --- Parse Query String ---
-QUERY_STRING="${QUERY_STRING:-}" # Lấy query string, nếu rỗng thì gán là ""
-ACTION="info" # Mặc định là lấy thông tin modem
+QUERY_STRING="${QUERY_STRING:-}"
+ACTION="info"
 
-# Phân tích action từ query string. Tìm kiếm chuỗi "action=" và lấy giá trị phía sau.
 case "$QUERY_STRING" in
     *action=info*) ACTION="info" ;;
     *action=status*) ACTION="status" ;;
     *action=reset*) ACTION="reset" ;;
-    *)
-        # Nếu không tìm thấy action cụ thể trong query string,
-        # thì vẫn sử dụng action mặc định là 'info'.
-        ;;
+    *) ;; # Use default ACTION="info"
 esac
 
 # --- Hàm Trả về Lỗi ---
-# Hàm này in ra một JSON chứa thông báo lỗi và thoát script với mã lỗi 1.
 error_response() {
-    local message="$1" # Lấy thông báo lỗi từ tham số đầu tiên
+    local message="$1"
     cat <<EOFERR
 {
     "error": true,
-    "message": "${message:-Lỗi không xác định}", # Sử dụng thông báo lỗi hoặc mặc định
-    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')" # Thêm dấu thời gian
+    "message": "${message:-Lỗi không xác định}",
+    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOFERR
-    exit 1 # Thoát với mã lỗi 1 (thường chỉ lỗi)
+    exit 1
 }
 
 # --- Hàm Tự động Phát hiện Thiết bị Modem ---
-# Hàm này cố gắng tìm ra cổng nối tiếp mà modem đang kết nối.
 detect_device() {
-    # Thử các đường dẫn thiết bị phổ biến cho modem USB, theo thứ tự ưu tiên.
     for dev in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyACM0 /dev/ttyACM1; do
-        # Kiểm tra xem tệp thiết bị có tồn tại không
         if [ -e "$dev" ]; then
-            # Sử dụng 'sms_tool' để gửi lệnh AT cơ bản ("AT") đến thiết bị.
-            # 'timeout 3' đảm bảo lệnh không bị treo quá 3 giây.
-            # '>/dev/null 2>&1' bỏ qua mọi output hoặc lỗi từ lệnh sms_tool.
+            # Try to send a basic AT command and capture stderr for potential error messages
+            # Use timeout to prevent hanging
             if timeout 3 sms_tool -d "$dev" at "AT" >/dev/null 2>&1; then
-                echo "$dev" # Nếu lệnh AT thành công, trả về tên thiết bị
-                return 0 # Thoát với mã 0 (thành công)
+                echo "$dev"
+                return 0
             fi
         fi
     done
-    return 1 # Trả về 1 (lỗi) nếu không tìm thấy thiết bị nào phù hợp
+    return 1
 }
 
 # --- Xử lý các Action ---
 case "$ACTION" in
     "info")
-        # Lấy tên thiết bị modem
         DEVICE=$(detect_device)
-        # Nếu không tìm thấy thiết bị, trả về lỗi
         if [ -z "$DEVICE" ]; then
             error_response "Không tìm thấy thiết bị modem tương thích."
         fi
         
-        # Kiểm tra xem script lấy thông tin chi tiết có tồn tại và có thể thực thi không
         if [ -x "$INSTALL_DIR/scripts/em9190_info.sh" ]; then
-            # Thực thi script lấy thông tin và in kết quả ra stdout
             "$INSTALL_DIR/scripts/em9190_info.sh" "$DEVICE"
         else
-            # Nếu script không tồn tại hoặc không có quyền thực thi, trả về lỗi
             error_response "Script $INSTALL_DIR/scripts/em9190_info.sh không tồn tại hoặc không có quyền thực thi."
         fi
         ;;
         
     "status")
-        # Lấy tên thiết bị modem
         DEVICE=$(detect_device)
-        DEVICE_STATUS="disconnected" # Mặc định trạng thái là disconnected
-        # Nếu tìm thấy thiết bị, cập nhật trạng thái là connected
+        DEVICE_STATUS="disconnected"
         [ -n "$DEVICE" ] && DEVICE_STATUS="connected"
         
-        # --- Lấy địa chỉ IP WAN ---
-        # Cách lấy IP WAN có thể khác nhau tùy thuộc vào cấu hình mạng OpenWrt của bạn.
-        # Dưới đây là một số phương pháp phổ biến, bạn có thể cần điều chỉnh cho phù hợp.
+        WAN_IP="-"
+        WAN_INTERFACE=""
+
+        # --- Improved WAN IP Detection ---
+        # Try to find the WWAN interface directly (common names)
+        WAN_INTERFACE=$(ip link show | awk '/state UP/ && /eth.*|wwan.*|usb/ {print $2}' | sed 's/://' | grep -E 'eth|wwan|usb' | head -n 1)
         
-        WAN_IP="-" # Mặc định IP là "-"
-        
-        # Phương pháp 1: Kiểm tra interface 'eth1' (thường là WAN trên một số router)
-        if command -v ifconfig >/dev/null 2>&1; then
-            WAN_IP=$(ifconfig eth1 | grep 'inet addr:' | awk -F: '{print $2}' | awk '{print $1}')
+        # Fallback: Find the interface used for the default route
+        if [ -z "$WAN_INTERFACE" ]; then
+            DEFAULT_ROUTE_IP=$(ip route show default | grep default | awk '/default via/ {print $3}' | head -n 1)
+            if [ -n "$DEFAULT_ROUTE_IP" ]; then
+                WAN_INTERFACE=$(ip route get $DEFAULT_ROUTE_IP | grep -oP 'dev \K\S+' | head -n 1)
+            fi
+        fi
+
+        if [ -n "$WAN_INTERFACE" ]; then
+            # Get the IP address for the found interface
+            WAN_IP=$(ip addr show $WAN_INTERFACE 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+            # If no IPv4, try to get IPv6 (optional, for completeness)
+            if [ -z "$WAN_IP" ] || [ "$WAN_IP" == "::1" ]; then
+                WAN_IP=$(ip addr show $WAN_INTERFACE 2>/dev/null | grep "inet6 " | grep -v "::1/128" | awk '{print $2}' | cut -d/ -f1)
+            fi
         fi
         
-        # Phương pháp 2: Sử dụng 'ip route' để tìm default gateway (thường là router của nhà mạng)
-        if [ -z "$WAN_IP" ] && command -v ip >/dev/null 2>&1; then
-            WAN_IP=$(ip route show default | grep default | awk '/default via/ {print $3}' | head -n 1)
+        # Further fallback: Check common modem interfaces directly if no interface was identified clearly
+        if [ -z "$WAN_IP" ] || [ "$WAN_IP" == "-" ]; then
+            for intf in wwan0 ppp0 usb0 eth0 eth1 eth2 eth3 eth4; do # Added eth0-4 as fallback
+                if ip addr show $intf >/dev/null 2>&1; then
+                    IP_ADDR=$(ip addr show $intf | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+                    if [ -n "$IP_ADDR" ] && [ "$IP_ADDR" != "-" ] && [[ ! "$IP_ADDR" =~ ^127\. ]]; then # Exclude localhost
+                        WAN_IP="$IP_ADDR"
+                        break
+                    fi
+                fi
+            done
         fi
+
+        WAN_IP="${WAN_IP:-"-"}" # Ensure it's always set, default to "-" if all attempts fail
         
-        # Phương pháp 3: Kiểm tra 'ip addr' cho các interface có thể là WWAN (tùy thuộc modem)
-        if [ -z "$WAN_IP" ]; then
-             # Thử lấy IP từ interface có thể là WWAN, ví dụ 'wwan0' hoặc 'ppp0'
-             WAN_IP=$(ip addr show wwan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
-             [ -z "$WAN_IP" ] && WAN_IP=$(ip addr show ppp0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
-        fi
-        
-        # Nếu sau tất cả mà WAN_IP vẫn rỗng, giữ giá trị mặc định "-"
-        WAN_IP="${WAN_IP:-"-"}"
-        
-        # Lấy thông tin uptime của hệ thống
         UPTIME_INFO=$(uptime | awk '{print $3,$4}' | sed 's/,//')
         
-        # Trả về JSON chứa trạng thái hệ thống và IP WAN
         cat <<EOFSTATUS
 {
     "system_status": "online",
-    "device_status": "$DEVICE_STATUS",     # Trạng thái kết nối modem: "connected" hoặc "disconnected"
-    "wan_ip": "$WAN_IP",                   # Địa chỉ IP WAN của kết nối di động
-    "device_path": "${DEVICE:--}",         # Đường dẫn thiết bị modem (/dev/tty...)
-    "uptime": "$UPTIME_INFO",              # Thời gian hoạt động của hệ thống OpenWrt
-    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')" # Thời gian hiện tại
+    "device_status": "$DEVICE_STATUS",
+    "wan_ip": "$WAN_IP",
+    "device_path": "${DEVICE:--}",
+    "uptime": "$UPTIME_INFO",
+    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOFSTATUS
         ;;
         
     "reset")
-        # Lấy tên thiết bị modem
         DEVICE=$(detect_device)
-        # Chỉ thực hiện reset nếu tìm thấy thiết bị
         if [ -n "$DEVICE" ]; then
-            # Gửi lệnh AT+CFUN=1,1 để reset modem.
-            # Lệnh này có nghĩa là:
-            # CFUN = 0: Minimum functionality (chỉ cho phép nghe/gọi)
-            # CFUN = 1: Full functionality (cho phép mọi chức năng)
-            # CFUN = 4: Flight mode (tắt mọi chức năng radio)
-            # CFUN = 1,1: Full functionality, và reset modem.
+            # Log the attempt to reset
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - Attempting modem reset on $DEVICE" >> "$INSTALL_DIR/logs/em9190_monitor.log"
+            
+            # Send AT+CFUN=1,1 command to reset the modem
             sms_tool -d "$DEVICE" at "AT+CFUN=1,1" >/dev/null 2>&1
-            # Trả về JSON thông báo lệnh đã được gửi
+            
+            # Check if the sms_tool command execution was successful (it might return 0 even if the command fails on modem)
+            # A more robust check would involve reading the actual response, but this is usually sufficient for initiation
+            
             cat <<EOFRESET
 {
     "success": true,
-    "message": "Đã gửi lệnh reset modem.",
+    "message": "Đã gửi lệnh reset modem. Modem sẽ khởi động lại.",
     "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOFRESET
         else
-            # Nếu không tìm thấy thiết bị, trả về lỗi
             error_response "Không tìm thấy thiết bị modem để reset."
         fi
         ;;
         
     *)
-        # Nếu action không hợp lệ (ví dụ: query string không chứa action hoặc action không xác định)
         error_response "Hành động không hợp lệ: $ACTION"
         ;;
 esac
@@ -211,81 +272,77 @@ fi
 . "$INSTALL_DIR/scripts/band_lookup.sh"
 
 # --- Lấy thông tin từ modem ---
-# Sử dụng timeout để tránh script bị treo nếu modem không phản hồi
-O=$(timeout 10 sms_tool -d "$DEVICE" at "at!gstatus?" 2>/dev/null)
-if [ $? -ne 0 ] || [ -z "$O" ]; then
-    echo '{"error": true, "message": "Không thể giao tiếp với modem hoặc timeout."}'
+# Try to get modem info. Capture stderr for better error reporting.
+MODEM_INFO_OUTPUT=$(timeout 10 sms_tool -d "$DEVICE" at "at!gstatus?" 2>/tmp/gstatus_err.log)
+GSTATUS_EXIT_CODE=$?
+
+if [ $GSTATUS_EXIT_CODE -ne 0 ] || [ -z "$MODEM_INFO_OUTPUT" ]; then
+    ERROR_MSG=$(cat /tmp/gstatus_err.log)
+    echo '{"error": true, "message": "Lỗi khi giao tiếp với modem (Exit code: '$GSTATUS_EXIT_CODE'). '"$(echo "${ERROR_MSG:-Lỗi không xác định từ sms_tool}" | tr -d '\r\n' | sed 's/"/\\"/g')"'", "exit_code": '$GSTATUS_EXIT_CODE'}'
+    rm -f /tmp/gstatus_err.log
     exit 1
 fi
+rm -f /tmp/gstatus_err.log # Clean up error log if successful
 
 # --- Trích xuất các thông tin cụ thể ---
+MODEL=$(echo "$MODEM_INFO_OUTPUT" | awk '/^Product/ {getline; print $2}' | tr -d '\r\n')
+FW=$(echo "$MODEM_INFO_OUTPUT" | awk '/^Revision/ {getline; print $2}' | tr -d '\r\n')
 
-# Model và Firmware
-MODEL=$(echo "$O" | awk '/^Product/ {getline; print $2}' | tr -d '\r\n')
-FW=$(echo "$O" | awk '/^Revision/ {getline; print $2}' | tr -d '\r\n')
-
-# Nhiệt độ
-TEMP=$(echo "$O" | awk -F: '/Temperature:/ {print $3}' | tr -d '\r\n' | xargs)
+TEMP=$(echo "$MODEM_INFO_OUTPUT" | awk -F: '/Temperature:/ {print $3}' | tr -d '\r\n' | xargs)
 [ -n "$TEMP" ] && TEMP="${TEMP}°C"
 
-# Chế độ mạng (System mode)
-MODE_RAW=$(echo "$O" | awk '/^System mode:/ {print $3}')
+MODE_RAW=$(echo "$MODEM_INFO_OUTPUT" | awk '/^System mode:/ {print $3}')
 case "$MODE_RAW" in
     "LTE") MODE="LTE" ;;
-    "ENDC") MODE="5G NSA" ;; # 5G Non-Standalone
-    "NR") MODE="5G SA" ;; # 5G Standalone (ít phổ biến hơn trên modem này)
+    "ENDC") MODE="5G NSA" ;;
+    "NR") MODE="5G SA" ;;
     *) MODE="Unknown" ;;
 esac
 
-# TAC (Tracking Area Code)
-TAC_HEX=$(echo "$O" | awk '/.*TAC:/ {print $6}')
+TAC_HEX=$(echo "$MODEM_INFO_OUTPUT" | awk '/.*TAC:/ {print $6}')
 TAC_DEC=""
 if [ -n "$TAC_HEX" ]; then
-    # Chuyển đổi Hex sang Dec nếu có thể
     TAC_DEC=$(printf "%d" "0x$TAC_HEX" 2>/dev/null)
 fi
 
-# Thông số tín hiệu (Lấy từ Primary Carrier - PCC)
-RSSI=$(echo "$O" | awk '/^PCC.*RSSI/ {print $4}' | xargs)
-RSRP=$(echo "$O" | awk '/^PCC.*RSRP/ {print $8}' | xargs)
-RSRQ=$(echo "$O" | awk '/^RSRQ/ {print $3}') # RSRQ chung
-SINR=$(echo "$O" | awk '/^SINR/ {print $3}') # SINR chung
+# Signal Quality (PCC - Primary Carrier)
+RSSI=$(echo "$MODEM_INFO_OUTPUT" | awk '/^PCC.*RSSI/ {print $4}' | xargs)
+RSRP=$(echo "$MODEM_INFO_OUTPUT" | awk '/^PCC.*RSRP/ {print $8}' | xargs)
+RSRQ=$(echo "$MODEM_INFO_OUTPUT" | awk '/^PCC.*RSRQ/ {print $6}' | xargs) # More specific RSRQ for PCC
+SINR=$(echo "$MODEM_INFO_OUTPUT" | awk '/^PCC.*SINR/ {print $6}' | xargs) # More specific SINR for PCC
 
-# Băng tần LTE chính (Primary Band)
-LTE_BAND_RAW=$(echo "$O" | awk '/^LTE band:/ {print $3}')
+# LTE Bands
+LTE_BAND_RAW=$(echo "$MODEM_INFO_OUTPUT" | awk '/^LTE band:/ {print $3}')
 LTE_BW=""
+PBAND="-"
 if [ -n "$LTE_BAND_RAW" ] && [ "$LTE_BAND_RAW" != "---" ]; then
-    LTE_BW=$(echo "$O" | awk '/^LTE band:/ {print $6}' | tr -d '\r')
+    LTE_BW=$(echo "$MODEM_INFO_OUTPUT" | awk '/^LTE band:/ {print $6}' | tr -d '\r')
     PBAND="$(band4g ${LTE_BAND_RAW/B/}) @${LTE_BW} MHz"
 fi
 
-# Các băng tần Secondary Carriers (SCC)
+# Secondary Carriers (SCC)
 S1BAND="-"
-SCC1_BAND_RAW=$(echo "$O" | awk -F: '/^LTE SCC1 state:.*ACTIVE/ {print $3}')
+SCC1_BAND_RAW=$(echo "$MODEM_INFO_OUTPUT" | awk -F: '/^LTE SCC1 state:.*ACTIVE/ {print $3}')
 if [ -n "$SCC1_BAND_RAW" ] && [ "$SCC1_BAND_RAW" != "---" ]; then
-    SCC1_BW=$(echo "$O" | awk '/^LTE SCC1 bw/ {print $5}' | tr -d '\r')
+    SCC1_BW=$(echo "$MODEM_INFO_OUTPUT" | awk '/^LTE SCC1 bw/ {print $5}' | tr -d '\r')
     S1BAND="$(band4g ${SCC1_BAND_RAW/B/}) @${SCC1_BW} MHz"
-    # Nếu có SCC, cập nhật chế độ mạng là LTE-A (Carrier Aggregation)
-    [ "$MODE" = "LTE" ] && MODE="LTE-A"
+    [ "$MODE" = "LTE" ] && MODE="LTE-A" # Update mode if Carrier Aggregation is active
 fi
 
-# Băng tần 5G NR (nếu có)
+# 5G NR Bands
 NR5G_BAND="-"
 NR_BAND_RAW=""
-NR_BAND_RAW=$(echo "$O" | awk '/SCC. NR5G band:/ {print $4}')
-
+NR_BAND_RAW=$(echo "$MODEM_INFO_OUTPUT" | awk '/SCC. NR5G band:/ {print $4}')
 if [ -n "$NR_BAND_RAW" ] && [ "$NR_BAND_RAW" != "---" ]; then
-    NR_BW=$(echo "$O" | awk '/SCC.*SCC. NR5G bw:/ {print $8}' | tr -d '\r')
+    NR_BW=$(echo "$MODEM_INFO_OUTPUT" | awk '/SCC. NR5G bw:/ {print $8}' | tr -d '\r')
     NR5G_BAND="$(band5g ${NR_BAND_RAW/n/}) @${NR_BW} MHz"
     
-    # Ghi đè thông số tín hiệu nếu có dữ liệu 5G NR
-    NR_RSRP=$(echo "$O" | awk '/SCC. NR5G RSRP:/ {print $4}' | xargs)
-    [ -n "$NR_RSRP" ] && RSRP="$NR_RSRP" # Ưu tiên RSRP của 5G nếu có
-    
-    NR_RSRQ=$(echo "$O" | awk '/SCC. NR5G RSRQ:/ {print $4}' | xargs)
+    # Overwrite signal metrics with 5G NR if available, as it's usually more relevant
+    NR_RSRP=$(echo "$MODEM_INFO_OUTPUT" | awk '/SCC. NR5G RSRP:/ {print $4}' | xargs)
+    [ -n "$NR_RSRP" ] && RSRP="$NR_RSRP"
+    NR_RSRQ=$(echo "$MODEM_INFO_OUTPUT" | awk '/SCC. NR5G RSRQ:/ {print $4}' | xargs)
     [ -n "$NR_RSRQ" ] && RSRQ="$NR_RSRQ"
-    
-    NR_SINR=$(echo "$O" | awk '/SCC. NR5G SINR:/ {print $4}' | xargs)
+    NR_SINR=$(echo "$MODEM_INFO_OUTPUT" | awk '/SCC. NR5G SINR:/ {print $4}' | xargs)
     [ -n "$NR_SINR" ] && SINR="$NR_SINR"
 fi
 
@@ -307,7 +364,8 @@ cat <<EOFINFO
         "rsrp": "${RSRP:--}",
         "rsrq": "${RSRQ:--}",
         "sinr": "${SINR:--}"
-    }
+    },
+    "device_path": "$DEVICE"
 }
 EOFINFO
 EOF
@@ -318,12 +376,9 @@ cat > "$INSTALL_DIR/scripts/band_lookup.sh" << 'EOF'
 #!/bin/sh
 # Các hàm tra cứu tên và tần số của băng tần mạng di động
 
-# Hàm tra cứu băng tần 4G LTE
 band4g() {
     local band_num="$1"
-    echo -n "B${band_num}" # Trả về định dạng B<số>
-    
-    # Tra cứu tần số tương ứng với số băng tần
+    echo -n "B${band_num}"
     case "${band_num}" in
         "1") echo -n " (2100 MHz)" ;; "2") echo -n " (1900 MHz)" ;; "3") echo -n " (1800 MHz)" ;;
         "4") echo -n " (1700 MHz)" ;; "5") echo -n " (850 MHz)" ;; "7") echo -n " (2600 MHz)" ;;
@@ -344,16 +399,13 @@ band4g() {
         "75") echo -n " (1500 MHz)" ;; "76") echo -n " (1500 MHz)" ;; "85") echo -n " (700 MHz)" ;;
         "87") echo -n " (410 MHz)" ;; "88") echo -n " (410 MHz)" ;; "103") echo -n " (700 MHz)" ;;
         "106") echo -n " (900 MHz)" ;;
-        *) echo -n " (Unknown)" ;; # Trường hợp không xác định
+        *) echo -n " (Unknown)" ;;
     esac
 }
 
-# Hàm tra cứu băng tần 5G NR
 band5g() {
     local band_num="$1"
-    echo -n "n${band_num}" # Trả về định dạng n<số>
-    
-    # Tra cứu tần số tương ứng với số băng tần
+    echo -n "n${band_num}"
     case "${band_num}" in
         "1") echo -n " (2100 MHz)" ;; "2") echo -n " (1900 MHz)" ;; "3") echo -n " (1800 MHz)" ;;
         "5") echo -n " (850 MHz)" ;; "7") echo -n " (2600 MHz)" ;; "8") echo -n " (900 MHz)" ;;
@@ -377,16 +429,9 @@ band5g() {
         "99") echo -n " (1600 MHz)" ;; "100") echo -n " (900 MHz)" ;; "101") echo -n " (1900 MHz)" ;;
         "102") echo -n " (6200 MHz)" ;; "104") echo -n " (6700 MHz)" ;; "105") echo -n " (600 MHz)" ;;
         "106") echo -n " (900 MHz)" ;; "109") echo -n " (700/1500 MHz)" ;;
-        # mmWave bands (VHF/UHF bands)
-        "257") echo -n " (28 GHz)" ;; "258") echo -n " (26 GHz)" ;; "259") echo -n " (41 GHz)" ;;
-        "260") echo -n " (39 GHz)" ;; "261") echo -n " (28 GHz)" ;; "262") echo -n " (47 GHz)" ;;
-        "263") echo -n " (60 GHz)" ;;
-        *) echo -n " (Unknown)" ;; # Trường hợp không xác định
+        *) echo -n " (Unknown)" ;;
     esac
 }
-
-# Xuất các hàm để có thể import ở script khác
-export -f band4g band5g
 EOF
 
 # --- Tạo Giao diện Web (index.html) ---
@@ -434,7 +479,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             justify-content: center;
             align-items: flex-start;
             padding: 20px;
-            overflow-x: hidden; /* Prevent horizontal scroll */
+            overflow-x: hidden;
         }
 
         .container {
@@ -450,7 +495,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
         }
 
         header h1 {
-            font-size: clamp(2rem, 6vw, 3rem); /* Responsive font size */
+            font-size: clamp(2rem, 6vw, 3rem);
             font-weight: 700;
             color: var(--text-accent);
             margin-bottom: 10px;
@@ -468,15 +513,15 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             backdrop-filter: blur(8px);
             font-weight: 600;
             font-size: 1.1em;
-            flex-wrap: wrap; /* Allow wrapping for IP address */
-            justify-content: center; /* Center items if they wrap */
+            flex-wrap: wrap;
+            justify-content: center;
         }
 
         .status-indicator .dot {
             width: 14px;
             height: 14px;
             border-radius: 50%;
-            background: var(--warning-color); /* Default to yellow */
+            background: var(--warning-color);
             animation: pulse 1.5s infinite ease-in-out;
         }
 
@@ -485,6 +530,9 @@ cat > "$WEB_DIR/index.html" << 'EOF'
         }
         .status-indicator .dot.disconnected {
             background: var(--danger-color);
+        }
+        .status-indicator .dot.warning { /* For paused state */
+            background: var(--warning-color);
         }
 
         @keyframes pulse {
@@ -548,16 +596,16 @@ cat > "$WEB_DIR/index.html" << 'EOF'
         .info-row span:first-child {
             font-weight: 600;
             color: var(--text-secondary);
-            flex-basis: 40%; /* Give label some space */
+            flex-basis: 40%;
         }
 
         .info-row span:last-child {
             font-family: 'Roboto Mono', monospace;
             color: var(--text-primary);
             font-weight: 700;
-            flex-basis: 60%; /* Give value space */
+            flex-basis: 60%;
             text-align: right;
-            word-break: break-all; /* Prevent long strings from breaking layout */
+            word-break: break-all;
         }
 
         .badge {
@@ -578,13 +626,13 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 15px;
-            margin-top: 10px; /* Adjust spacing */
+            margin-top: 10px;
         }
 
         .signal-item {
             text-align: center;
             padding: 20px 15px;
-            background: #f9fbfd; /* Lighter background for signal items */
+            background: #f9fbfd;
             border-radius: 12px;
             border: 1px solid #e8eff5;
             transition: all 0.3s ease-out;
@@ -596,7 +644,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
 
         .signal-item:hover {
             border-color: var(--primary-color);
-            background: #eef5ff; /* Light blue on hover */
+            background: #eef5ff;
         }
 
         .signal-label {
@@ -607,7 +655,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
         }
 
         .signal-value {
-            font-size: clamp(1.8rem, 5vw, 2.4rem); /* Responsive font size for values */
+            font-size: clamp(1.8rem, 5vw, 2.4rem);
             font-weight: 700;
             font-family: 'Roboto Mono', monospace;
             line-height: 1.1;
@@ -624,7 +672,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             display: flex;
             justify-content: center;
             gap: 15px;
-            flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+            flex-wrap: wrap;
         }
 
         .btn {
@@ -651,7 +699,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             color: white;
         }
         .btn-primary:hover {
-            background: #357ABD; /* Darker blue */
+            background: #357ABD;
         }
 
         .btn-danger {
@@ -659,18 +707,17 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             color: white;
         }
         .btn-danger:hover {
-            background: #D32F2F; /* Darker red */
+            background: #D32F2F;
         }
         
-        /* Refresh interval controls */
         .refresh-controls {
-            margin-top: 25px; /* Add space above this section */
-            margin-bottom: 30px; /* Add space below this section */
+            margin-top: 25px;
+            margin-bottom: 30px;
             display: flex;
             justify-content: center;
             align-items: center;
-            gap: 12px; /* Space between elements */
-            flex-wrap: wrap; /* Allow wrapping on smaller screens */
+            gap: 12px;
+            flex-wrap: wrap;
             font-size: 0.95em;
             color: var(--text-secondary);
         }
@@ -686,7 +733,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             border: 1px solid var(--border-color);
             background-color: var(--card-background);
             cursor: pointer;
-            font-size: inherit; /* Use parent font size */
+            font-size: inherit;
             transition: all 0.3s ease;
         }
         .refresh-controls select:hover,
@@ -696,29 +743,27 @@ cat > "$WEB_DIR/index.html" << 'EOF'
         .refresh-controls .refresh-timer-display {
             font-weight: 600;
             color: var(--primary-color);
-            min-width: 35px; /* Ensure enough space for numbers */
+            min-width: 35px;
             text-align: center;
             display: inline-block;
-            padding: 8px 10px; /* Match button padding */
-            background-color: #f0f7ff; /* Light background */
+            padding: 8px 10px;
+            background-color: #f0f7ff;
             border: 1px solid #d6eaff;
             border-radius: 8px;
         }
         
-        /* Style for the toggle button specifically to match the rest */
         .refresh-controls .btn-toggle-auto {
             background: var(--primary-color);
             color: white;
-            padding: 10px 20px; /* Adjust padding to match select/label */
-            font-size: 0.95em; /* Match label font size */
+            padding: 10px 20px;
+            font-size: 0.95em;
             display: inline-flex;
             align-items: center;
             gap: 8px;
         }
         .refresh-controls .btn-toggle-auto:hover {
-             background: #357ABD; /* Darker blue */
+             background: #357ABD;
         }
-
 
         .back-link {
             position: absolute;
@@ -746,107 +791,34 @@ cat > "$WEB_DIR/index.html" << 'EOF'
 
         /* --- Media Queries for Responsiveness --- */
         @media (max-width: 768px) {
-            body {
-                padding: 10px;
-            }
-            .container {
-                padding: 0 10px; /* Less padding inside container */
-            }
-            header h1 {
-                font-size: 2.2rem;
-            }
-            .status-indicator {
-                font-size: 1em;
-                padding: 8px 16px;
-                gap: 8px;
-                flex-direction: column; /* Stack items vertically */
-                align-items: center;
-            }
-            .status-indicator .dot {
-                width: 12px;
-                height: 12px;
-            }
-            .grid {
-                grid-template-columns: 1fr; /* Stack cards vertically */
-            }
-            .card {
-                padding: 20px;
-            }
-            .card h2 {
-                font-size: 1.25em;
-                padding-bottom: 10px;
-            }
-            .info-row {
-                padding: 12px 0;
-                font-size: 1em;
-            }
-            .signal-grid {
-                grid-template-columns: 1fr; /* Stack signal items */
-            }
-            .signal-value {
-                font-size: 2rem;
-            }
-            .controls {
-                flex-direction: column; /* Stack buttons */
-                align-items: center;
-            }
-            .btn {
-                width: 80%; /* Make buttons wider */
-                max-width: 300px;
-            }
-            .refresh-controls {
-                flex-direction: column; /* Stack refresh controls */
-                align-items: center;
-                width: 100%;
-            }
-            .refresh-controls select,
-            .refresh-controls button {
-                width: 80%;
-                max-width: 250px;
-                text-align: center;
-            }
-            .refresh-controls .refresh-timer-display {
-                margin-top: 5px; /* Space below the select box */
-                margin-bottom: 5px; /* Space above the button */
-            }
-            .back-link {
-                position: static;
-                margin-bottom: 20px;
-                display: block; /* Make it take full width */
-                width: fit-content; /* Adjust width */
-                margin: 0 auto 20px auto; /* Center it */
-            }
+            body { padding: 10px; }
+            .container { padding: 0 10px; }
+            header h1 { font-size: 2.2rem; }
+            .status-indicator { font-size: 1em; padding: 8px 16px; gap: 8px; flex-direction: column; align-items: center; }
+            .status-indicator .dot { width: 12px; height: 12px; }
+            .grid { grid-template-columns: 1fr; }
+            .card { padding: 20px; }
+            .card h2 { font-size: 1.25em; padding-bottom: 10px; }
+            .info-row { padding: 12px 0; font-size: 1em; }
+            .signal-grid { grid-template-columns: 1fr; }
+            .signal-value { font-size: 2rem; }
+            .controls { flex-direction: column; align-items: center; }
+            .btn { width: 80%; max-width: 300px; }
+            .refresh-controls { flex-direction: column; align-items: center; width: 100%; }
+            .refresh-controls select, .refresh-controls button { width: 80%; max-width: 250px; text-align: center; }
+            .refresh-controls .refresh-timer-display { margin-top: 5px; margin-bottom: 5px; }
+            .back-link { position: static; margin-bottom: 20px; display: block; width: fit-content; margin: 0 auto 20px auto; }
         }
 
         @media (max-width: 480px) {
-            header h1 {
-                font-size: 1.8rem;
-            }
-            .status-indicator {
-                font-size: 0.95em;
-                padding: 8px 12px;
-            }
-            .card h2 {
-                font-size: 1.15em;
-            }
-            .info-row span:first-child {
-                flex-basis: 50%;
-            }
-            .info-row span:last-child {
-                flex-basis: 50%;
-            }
-            .signal-value {
-                font-size: 1.8rem;
-            }
-            .btn {
-                font-size: 1em;
-                padding: 10px 20px;
-                width: 90%;
-            }
-             .refresh-controls select,
-            .refresh-controls button {
-                width: 90%;
-            }
+            header h1 { font-size: 1.8rem; }
+            .status-indicator { font-size: 0.95em; padding: 8px 12px; }
+            .card h2 { font-size: 1.15em; }
+            .info-row span:first-child { flex-basis: 50%; }
+            .info-row span:last-child { flex-basis: 50%; }
+            .signal-value { font-size: 1.8rem; }
+            .btn { font-size: 1em; padding: 10px 20px; width: 90%; }
+            .refresh-controls select, .refresh-controls button { width: 90%; }
         }
     </style>
 </head>
@@ -861,7 +833,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             <div class="status-indicator">
                 <span class="dot" id="status-dot"></span>
                 <span id="status-text">Đang tải dữ liệu...</span>
-                <span id="wan-ip-display"></span> <!-- NEW: Span to display WAN IP -->
+                <span id="wan-ip-display"></span>
             </div>
         </header>
 
@@ -924,7 +896,6 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             </button>
         </div>
         
-        <!-- SECTION: Refresh Controls -->
         <div class="refresh-controls">
             <label for="refresh-interval">Tự động làm mới sau:</label>
             <select id="refresh-interval">
@@ -953,34 +924,39 @@ cat > "$WEB_DIR/index.html" << 'EOF'
 
                 this.statusDot = document.getElementById('status-dot');
                 this.statusText = document.getElementById('status-text');
-                this.wanIpDisplay = document.getElementById('wan-ip-display'); // Get the new span element
+                this.wanIpDisplay = document.getElementById('wan-ip-display');
                 this.refreshIntervalSelect = document.getElementById('refresh-interval');
                 this.refreshTimerDisplay = document.getElementById('refresh-timer');
                 this.autoRefreshToggleButton = document.getElementById('auto-refresh-icon').closest('button');
 
+                // Dynamically set the initial value of the select box based on the server port
+                // This assumes the select box options match the default or desired intervals.
+                // If the server port is NOT one of the options, the select will default to the first.
+                // A more robust approach might be to fetch the port from the server or pass it via a hidden input.
+                this.refreshIntervalSelect.value = this.updateInterval;
+
                 this.init();
             }
 
-            // Initializes the monitor, sets up event listeners, and starts first refresh
             init() {
-                // Set initial state for refresh controls based on defaults
-                this.refreshIntervalSelect.value = this.defaultUpdateInterval;
-                this.updateCountdownDisplay(this.defaultUpdateInterval / 1000); // Display seconds
+                this.updateCountdownDisplay(this.updateInterval / 1000);
                 this.updateAutoRefreshButtonState(this.autoRefreshEnabled);
                 
-                // Setup event listener for interval change
                 this.refreshIntervalSelect.addEventListener('change', (e) => {
                     this.setNewUpdateInterval(parseInt(e.target.value, 10));
                 });
 
-                this.updateData(); // Fetch data immediately on load
-                this.startAutoRefresh(); // Start the auto-refresh cycle
+                this.updateData();
+                this.startAutoRefresh();
             }
 
-            // Fetches data from the API (both info and status for IP)
             async updateData() {
+                // Add a loading state indicator if possible, e.g., disable buttons, show spinner
+                const currentStatusText = this.statusText.textContent; // Store current status
+                this.setConnectionStatus(null, '-'); // Set to a neutral "loading" state
+                this.statusText.textContent = 'Đang tải...';
+
                 try {
-                    // Fetch modem info
                     const infoResponse = await fetch('/api.cgi?action=info');
                     if (!infoResponse.ok) {
                         throw new Error(`HTTP error! status: ${infoResponse.status}`);
@@ -992,7 +968,6 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                     }
                     this.updateUI(infoData);
 
-                    // Fetch system status (including WAN IP)
                     const statusResponse = await fetch('/api.cgi?action=status');
                     if (!statusResponse.ok) {
                         throw new Error(`HTTP error! status: ${statusResponse.status}`);
@@ -1002,45 +977,47 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                     if (statusData.error) {
                         throw new Error(statusData.message || 'Unknown API error for status');
                     }
-                    this.setConnectionStatus(infoData.device_status === 'connected', statusData.wan_ip); // Pass WAN IP here
+                    // Pass device_status from infoData to setConnectionStatus if available, otherwise use statusData
+                    const deviceStatus = infoData.device_path ? 'connected' : 'disconnected';
+                    this.setConnectionStatus(deviceStatus === 'connected', statusData.wan_ip);
 
-                    this.resetRefreshTimer(); // Reset countdown after successful fetch
+                    this.resetRefreshTimer();
 
                 } catch (error) {
                     console.error('Error fetching data:', error);
-                    this.setConnectionStatus(false, '-'); // Indicate disconnection and no IP
-                    // If connection fails, we keep the existing data and countdown
-                    // The timer will continue, and another fetch will be attempted.
+                    this.setConnectionStatus(false, '-');
+                    this.statusText.textContent = 'Lỗi tải dữ liệu';
+                    // If an error occurs, keep the existing data but update status
+                    // The timer will continue trying to fetch.
+                    // If the error persists, the 'disconnected' state will be shown.
+                    this.resetRefreshTimer(); // Reset timer even on error to keep trying
                 }
             }
 
-            // Updates the HTML elements with the fetched data
             updateUI(data) {
                 document.getElementById('modem').textContent = data.modem || '-';
                 document.getElementById('firmware').textContent = data.firmware || '-';
                 document.getElementById('temperature').textContent = data.temperature ? `${data.temperature}°C` : '-';
                 document.getElementById('timestamp').textContent = data.timestamp || '-';
 
-                // Update Mode Badge styling and text
                 const modeElement = document.getElementById('mode');
                 modeElement.textContent = data.mode || '-';
-                modeElement.className = 'badge mode-badge'; // Reset classes
+                modeElement.className = 'badge mode-badge';
                 if (data.mode) {
                     if (data.mode.includes('5G')) {
-                        modeElement.style.backgroundColor = 'var(--warning-color)'; // Orange for 5G
+                        modeElement.style.backgroundColor = 'var(--warning-color)';
                     } else if (data.mode.includes('LTE-A') || data.mode.includes('LTE')) {
-                        modeElement.style.backgroundColor = '#38b2ac'; // Teal for LTE-A
+                        modeElement.style.backgroundColor = '#38b2ac';
                     } else {
-                        modeElement.style.backgroundColor = '#48bb78'; // Green for other LTE
+                        modeElement.style.backgroundColor = '#48bb78';
                     }
                 } else {
-                     modeElement.style.backgroundColor = '#ccc'; // Gray if no mode
+                     modeElement.style.backgroundColor = '#ccc';
                 }
 
                 document.getElementById('primary_band').textContent = data.primary_band || '-';
                 document.getElementById('secondary_band').textContent = data.secondary_band || '-';
 
-                // Update 5G NR Band badge
                 const nr5gElement = document.getElementById('nr5g_band');
                 nr5gElement.textContent = data.nr5g_band || '-';
                 if (data.nr5g_band && data.nr5g_band !== '-') {
@@ -1049,7 +1026,6 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                     nr5gElement.classList.remove('nr-badge');
                 }
 
-                // Update signal quality values
                 this.updateSignalValue('rssi', data.signal.rssi);
                 this.updateSignalValue('rsrp', data.signal.rsrp);
                 this.updateSignalValue('rsrq', data.signal.rsrq);
@@ -1059,83 +1035,78 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                 document.getElementById('tac_dec').textContent = data.tac_dec || '-';
             }
 
-            // Updates the color of signal values based on quality
             updateSignalValue(id, value) {
                 const element = document.getElementById(id);
                 element.textContent = value !== undefined && value !== null ? value : '-';
 
                 if (value === '-' || value === undefined || value === null) {
-                    element.style.color = '#ccc'; // Lighter gray for missing values
+                    element.style.color = '#ccc';
                     return;
                 }
 
                 const numValue = parseFloat(value);
-                let color = '#333'; // Default color
+                let color = '#333';
 
-                // Assign colors based on common signal quality thresholds
                 switch (id) {
                     case 'rssi':
-                        if (numValue > -70) color = 'var(--success-color)'; // Good
-                        else if (numValue > -85) color = 'var(--warning-color)'; // Fair
-                        else color = 'var(--danger-color)'; // Poor
+                        if (numValue > -70) color = 'var(--success-color)';
+                        else if (numValue > -85) color = 'var(--warning-color)';
+                        else color = 'var(--danger-color)';
                         break;
                     case 'rsrp':
-                        if (numValue >= -80) color = 'var(--success-color)'; // Excellent
-                        else if (numValue >= -100) color = 'var(--warning-color)'; // Good to Fair
-                        else color = 'var(--danger-color)'; // Poor
+                        if (numValue >= -80) color = 'var(--success-color)';
+                        else if (numValue >= -100) color = 'var(--warning-color)';
+                        else color = 'var(--danger-color)';
                         break;
                     case 'rsrq':
-                        if (numValue >= -10) color = 'var(--success-color)'; // Good
-                        else if (numValue >= -15) color = 'var(--warning-color)'; // Fair
-                        else color = 'var(--danger-color)'; // Poor
+                        if (numValue >= -10) color = 'var(--success-color)';
+                        else if (numValue >= -15) color = 'var(--warning-color)';
+                        else color = 'var(--danger-color)';
                         break;
-                    case 'sinr': // Signal-to-Noise Ratio
-                        if (numValue >= 20) color = 'var(--success-color)'; // Excellent
-                        else if (numValue >= 10) color = 'var(--warning-color)'; // Good
-                        else color = 'var(--danger-color)'; // Poor
+                    case 'sinr':
+                        if (numValue >= 20) color = 'var(--success-color)';
+                        else if (numValue >= 10) color = 'var(--warning-color)';
+                        else color = 'var(--danger-color)';
                         break;
                 }
                 element.style.color = color;
             }
 
-            // Sets the visual status (dot, text, and IP) for connection
             setConnectionStatus(connected, wanIp) {
-                if (connected) {
+                if (connected === null) { // Loading state
+                    this.statusText.textContent = 'Đang tải...';
+                    this.statusDot.classList.remove('connected', 'disconnected', 'warning');
+                    this.wanIpDisplay.textContent = '';
+                    this.wanIpDisplay.style.display = 'none';
+                } else if (connected) {
                     this.statusText.textContent = 'Đã kết nối';
                     this.statusDot.classList.remove('disconnected', 'warning');
                     this.statusDot.classList.add('connected');
-                    // Display WAN IP if provided
                     if (wanIp && wanIp !== '-') {
                          this.wanIpDisplay.textContent = `(${wanIp})`;
-                         this.wanIpDisplay.style.display = 'inline'; // Make sure it's visible
+                         this.wanIpDisplay.style.display = 'inline';
                     } else {
                          this.wanIpDisplay.textContent = '';
-                         this.wanIpDisplay.style.display = 'none'; // Hide if no IP
+                         this.wanIpDisplay.style.display = 'none';
                     }
-
                 } else {
                     this.statusText.textContent = 'Mất kết nối';
                     this.statusDot.classList.remove('connected', 'warning');
                     this.statusDot.classList.add('disconnected');
-                    this.wanIpDisplay.textContent = ''; // Clear IP on disconnect
-                    this.wanIpDisplay.style.display = 'none'; // Hide the IP display
+                    this.wanIpDisplay.textContent = '';
+                    this.wanIpDisplay.style.display = 'none';
                 }
             }
 
-            // Starts the automatic refresh process
             startAutoRefresh() {
-                if (this.autoRefreshEnabled) {
-                    this.stopTimers(); // Clear any existing timers before starting new ones
-                    // Set up the interval to fetch data every `updateInterval` milliseconds
-                    this.refreshTimer = setInterval(() => {
-                        this.updateData();
-                    }, this.updateInterval);
-                    // Start the countdown display and logic
-                    this.startCountdown();
-                }
+                if (!this.autoRefreshEnabled) return;
+                this.stopTimers();
+                this.refreshTimer = setInterval(() => {
+                    this.updateData();
+                }, this.updateInterval);
+                this.startCountdown();
             }
 
-            // Stops all active timers (data fetch interval and countdown interval)
             stopTimers() {
                 clearInterval(this.refreshTimer);
                 clearInterval(this.countdownTimer);
@@ -1143,118 +1114,113 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                 this.countdownTimer = null;
             }
             
-            // Resets the countdown timer and the data fetch interval
             resetRefreshTimer() {
-                this.stopTimers(); // Stop existing timers
+                this.stopTimers();
                 if (this.autoRefreshEnabled) {
-                    this.startCountdown(); // Restart the countdown display
-                    // Re-schedule the next data fetch
+                    this.startCountdown();
                     this.refreshTimer = setInterval(() => {
                         this.updateData();
                     }, this.updateInterval);
                 }
             }
 
-            // Starts the countdown display and triggers update when it reaches zero
             startCountdown() {
-                if (!this.autoRefreshEnabled) return; // Do nothing if auto-refresh is disabled
+                if (!this.autoRefreshEnabled) return;
 
                 let secondsRemaining = this.updateInterval / 1000;
                 this.updateCountdownDisplay(secondsRemaining);
 
-                // Set up the interval to decrement the countdown every second
                 this.countdownTimer = setInterval(() => {
                     secondsRemaining--;
                     this.updateCountdownDisplay(secondsRemaining);
 
                     if (secondsRemaining <= 0) {
-                        this.updateData(); // Fetch data when countdown finishes
-                        this.stopTimers(); // Stop current timers
-                        if (this.autoRefreshEnabled) { // If auto-refresh is still enabled, restart the cycle
+                        this.updateData();
+                        this.stopTimers();
+                        if (this.autoRefreshEnabled) {
                             this.startAutoRefresh();
                         }
                     }
                 }, 1000);
             }
 
-            // Updates the text content of the countdown display element
             updateCountdownDisplay(seconds) {
                 this.refreshTimerDisplay.textContent = `${seconds}s`;
             }
 
-            // Sets a new interval for auto-refresh and restarts the process
             setNewUpdateInterval(interval) {
-                this.updateInterval = interval; // Update the active interval
-                this.updateCountdownDisplay(this.updateInterval / 1000); // Update the display with new time
+                this.updateInterval = interval;
+                this.updateCountdownDisplay(this.updateInterval / 1000);
                 if (this.autoRefreshEnabled) {
-                    this.startAutoRefresh(); // Restart refresh with the new interval
+                    this.startAutoRefresh();
                 }
             }
 
-            // Toggles the auto-refresh feature on or off
             toggleAutoRefresh() {
-                this.autoRefreshEnabled = !this.autoRefreshEnabled; // Flip the state
-                this.updateAutoRefreshButtonState(this.autoRefreshEnabled); // Update the button's appearance
+                this.autoRefreshEnabled = !this.autoRefreshEnabled;
+                this.updateAutoRefreshButtonState(this.autoRefreshEnabled);
 
                 if (this.autoRefreshEnabled) {
-                    this.startAutoRefresh(); // Start refreshing if enabled
+                    this.startAutoRefresh();
+                    // Restore previous connection status if it wasn't 'loading'
+                    const currentStatusText = this.statusText.textContent;
+                    if(currentStatusText === 'Tự động làm mới đã dừng' || currentStatusText === 'Lỗi tải dữ liệu') {
+                       // Attempt to re-fetch to get correct status, or just set a general state
+                       this.setConnectionStatus(null, '-'); // Back to loading state
+                       this.statusText.textContent = 'Đang tải...';
+                    } else {
+                       // Re-apply previous status if it was connected/disconnected
+                       const isConnected = this.statusDot.classList.contains('connected');
+                       const currentWanIp = this.wanIpDisplay.textContent.replace(/[()]/g, '');
+                       this.setConnectionStatus(isConnected, currentWanIp);
+                    }
                 } else {
-                    this.stopTimers(); // Stop all timers if disabled
-                    this.refreshTimerDisplay.textContent = '-'; // Clear the countdown display
-                    // Update status to reflect that auto-refresh is paused
+                    this.stopTimers();
+                    this.refreshTimerDisplay.textContent = '-';
                     this.statusText.textContent = 'Tự động làm mới đã dừng';
                     this.statusDot.classList.remove('connected', 'disconnected');
-                    this.statusDot.classList.add('warning'); // Use warning color for paused state
-                    this.wanIpDisplay.textContent = ''; // Clear IP when paused
+                    this.statusDot.classList.add('warning');
+                    this.wanIpDisplay.textContent = '';
                     this.wanIpDisplay.style.display = 'none';
                 }
             }
             
-            // Updates the icon and text on the toggle button to reflect the current state
             updateAutoRefreshButtonState(enabled) {
                 const icon = this.autoRefreshToggleButton.querySelector('i');
                 if (enabled) {
-                    icon.classList.remove('fa-play'); // Show pause icon
+                    icon.classList.remove('fa-play');
                     icon.classList.add('fa-pause');
-                    this.autoRefreshToggleButton.textContent = ' Tắt Tự động'; // Update button text
+                    this.autoRefreshToggleButton.textContent = ' Tắt Tự động';
                 } else {
-                    icon.classList.remove('fa-pause'); // Show play icon
+                    icon.classList.remove('fa-pause');
                     icon.classList.add('fa-play');
-                    this.autoRefreshToggleButton.textContent = ' Bật Tự động'; // Update button text
+                    this.autoRefreshToggleButton.textContent = ' Bật Tự động';
                 }
             }
         }
 
-        // --- Global Helper Functions ---
-
-        // Manually trigger data refresh and reset the auto-refresh timer
         function refreshData() {
             const statusText = document.getElementById('status-text');
-            statusText.textContent = 'Đang làm mới...'; // Provide visual feedback
+            statusText.textContent = 'Đang làm mới...';
             
             window.monitor.updateData().then(() => {
-                // updateData() handles status update and timer reset on success
-            }).catch(() => {
-                // updateData() handles status update on failure
+                // updateData handles its own status updates and timer resets on success/failure
             });
-            window.monitor.resetRefreshTimer(); // Ensure the countdown is reset
         }
 
-        // Resets the modem, with user confirmation
         async function resetModem() {
             if (!confirm('Bạn có chắc chắn muốn reset modem? Hành động này sẽ làm gián đoạn kết nối hiện tại.')) {
-                return; // Exit if user cancels
+                return;
             }
 
             const statusText = document.getElementById('status-text');
             
-            // Provide immediate feedback that the action is in progress
             statusText.textContent = 'Đang gửi lệnh reset...';
-            window.monitor.statusDot.className = 'dot warning'; // Change dot to warning color
+            window.monitor.statusDot.className = 'dot warning';
             window.monitor.autoRefreshEnabled = false; // Temporarily disable auto-refresh
-            window.monitor.stopTimers(); // Stop any active timers
-            window.monitor.refreshTimerDisplay.textContent = '-'; // Clear countdown
-            window.monitor.updateAutoRefreshButtonState(false); // Update button to reflect paused state
+            window.monitor.stopTimers();
+            window.monitor.refreshTimerDisplay.textContent = '-';
+            window.monitor.updateAutoRefreshButtonState(false);
 
             try {
                 const response = await fetch('/api.cgi?action=reset');
@@ -1266,43 +1232,34 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                 if (data.success) {
                     alert('Lệnh reset đã được gửi. Modem sẽ khởi động lại. Trang sẽ tự động tải lại sau khoảng 25 giây.');
                     
-                    // After a successful reset, the modem will reboot.
-                    // We wait for a period to allow the modem to boot up and then reload the page.
                     setTimeout(() => {
                          window.location.reload(); 
-                    }, 25000); // 25 seconds to allow modem to boot
+                    }, 25000);
 
                 } else {
-                    // If reset failed, alert the user and restore previous status/timers if possible
                     alert('Lỗi khi reset modem: ' + (data.message || 'Lỗi không xác định'));
-                    // Attempt to restore the previous state
                     statusText.textContent = 'Reset thất bại';
-                    window.monitor.statusDot.className = 'dot disconnected'; // Show as disconnected
-                    window.monitor.autoRefreshEnabled = false; // Keep disabled until user re-enables
-                    window.monitor.updateAutoRefreshButtonState(false); // Ensure button shows "Bật Tự động"
+                    window.monitor.statusDot.className = 'dot disconnected';
+                    window.monitor.autoRefreshEnabled = false;
+                    window.monitor.updateAutoRefreshButtonState(false);
                 }
             } catch (error) {
-                // Handle network errors or other exceptions during the reset process
                 alert('Không thể gửi lệnh reset: ' + error.message);
                 statusText.textContent = 'Lỗi gửi lệnh';
-                window.monitor.statusDot.className = 'dot disconnected'; // Show as disconnected
-                window.monitor.autoRefreshEnabled = false; // Keep disabled
-                window.monitor.updateAutoRefreshButtonState(false); // Ensure button shows "Bật Tự động"
+                window.monitor.statusDot.className = 'dot disconnected';
+                window.monitor.autoRefreshEnabled = false;
+                window.monitor.updateAutoRefreshButtonState(false);
             }
         }
 
-        // Toggles the auto-refresh feature on or off
         function toggleAutoRefresh() {
             window.monitor.toggleAutoRefresh();
         }
 
-        // Initialize the monitor when the DOM is ready
         document.addEventListener('DOMContentLoaded', () => {
             window.monitor = new EM9190Monitor();
         });
     </script>
-</body>
-</html>
 EOF
 
 # --- Thiết lập quyền truy cập cho các file ---
@@ -1315,33 +1272,22 @@ chmod 644 "$WEB_DIR/index.html"
 echo "✍️ Tạo file log..."
 touch /var/log/uhttpd_em9190_access.log
 touch /var/log/uhttpd_em9190_error.log
+# Tạo log file cho script chính
+touch "$INSTALL_DIR/logs/em9190_monitor.log"
 
-# --- Kiểm tra các dependencies cần thiết ---
-echo "🔍 Kiểm tra dependencies..."
-MISSING_DEPS=""
+# --- Cấu hình uhttpd độc lập cho EM9190 Monitor ---
+echo "🚀 Cấu hình và khởi động EM9190 Monitor web server trên port $PORT..."
 
-# Kiểm tra sự tồn tại của sms_tool
-if ! command -v sms_tool >/dev/null 2>&1; then
-    MISSING_DEPS="$MISSING_DEPS sms_tool"
-fi
-
-# Kiểm tra sự tồn tại của uhttpd (cần cho web server)
-# Lưu ý: uhttpd thường có sẵn trên OpenWrt, nhưng vẫn kiểm tra
-if ! command -v uhttpd >/dev/null 2>&1; then
-    MISSING_DEPS="$MISSING_DEPS uhttpd"
-fi
-
-if [ -n "$MISSING_DEPS" ]; then
-    echo "⚠️ Cảnh báo: Thiếu các gói cần thiết: $MISSING_DEPS"
-    echo "   Vui lòng cài đặt bằng lệnh: opkg update && opkg install $MISSING_DEPS"
-    exit 1
-fi
-
-# --- Cấu hình và khởi động uhttpd độc lập cho EM9190 Monitor ---
-echo "🚀 Khởi động EM9190 Monitor web server trên port 9999..."
+# Tạo file cấu hình UCI cho service
+UCI_CONFIG_FILE="/etc/config/em9190-monitor"
+echo "config em9190-monitor" > "$UCI_CONFIG_FILE"
+echo "    option port '$PORT'" >> "$UCI_CONFIG_FILE"
+echo "    option install_dir '$INSTALL_DIR'" >> "$UCI_CONFIG_FILE"
+echo "    option web_dir '$WEB_DIR'" >> "$UCI_CONFIG_FILE"
+echo "commit em9190-monitor" # Commit for good measure, though direct write is usually fine
 
 # Tạo script init cho service
-cat > /etc/init.d/em9190-monitor << 'EOF'
+cat > /etc/init.d/em9190-monitor << EOF
 #!/bin/sh /etc/rc.common
 
 START=99
@@ -1350,30 +1296,43 @@ STOP=10
 USE_PROCD=1
 PROG=/usr/sbin/uhttpd
 
-# Hàm khởi động service
+# Get configuration from UCI
+CONFIG_FILE="/etc/config/em9190-monitor"
+if [ -f "\$CONFIG_FILE" ]; then
+    PORT=\$(uci -c "\$CONFIG_FILE" get em9190-monitor.@config[0].port 2>/dev/null || echo $DEFAULT_PORT)
+    INSTALL_DIR=\$(uci -c "\$CONFIG_FILE" get em9190-monitor.@config[0].install_dir 2>/dev/null || echo "$DEFAULT_INSTALL_DIR")
+    WEB_DIR=\$(uci -c "\$CONFIG_FILE" get em9190-monitor.@config[0].web_dir 2>/dev/null || echo "$DEFAULT_WEB_DIR")
+else
+    # Fallback to default values if config file is missing
+    PORT="$DEFAULT_PORT"
+    INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+    WEB_DIR="$DEFAULT_WEB_DIR"
+fi
+
+# Check if uhttpd executable exists
+if [ ! -x "\$PROG" ]; then
+    echo "ERROR: uhttpd not found at \$PROG"
+    exit 1
+fi
+
 start_service() {
-    procd_open_instance # Mở một instance mới cho uhttpd
-    # Cấu hình uhttpd:
-    # -f: Chạy ở chế độ foreground
-    # -h /www/em9190: Sử dụng /www/em9190 làm thư mục gốc web
-    # -p 9999: Lắng nghe trên port 9999
-    # -x /cgi-bin: Chỉ định thư mục cho các script CGI (dù ta đang dùng /api.cgi trực tiếp)
-    # -t 60: Timeout cho kết nối là 60 giây
-    procd_set_param command $PROG -f -h /www/em9190 -p 9999 -x /cgi-bin -t 60
-    procd_set_param respawn # Tự động khởi động lại nếu uhttpd bị lỗi
-    procd_close_instance # Đóng instance
+    procd_open_instance
+    procd_set_param command "\$PROG" "-f" "-h" "\$WEB_DIR" "-p" "\$PORT" "-x" "/cgi-bin" "-t" "60"
+    procd_set_param respawn
+    procd_set_param stdout_log "3" # Log stdout to syslog
+    procd_set_param stderr_log "2" # Log stderr to syslog
+    procd_close_instance
 }
 
-# Hàm dừng service
 stop_service() {
-    # Tìm và dừng PID của uhttpd đang chạy trên port 9999
-    local PID=$(ps | grep "[u]httpd.*-p 9999" | awk '{print $1}')
-    if [ -n "$PID" ]; then
-        kill $PID
+    # Find and kill the specific uhttpd instance for EM9190 monitor
+    # Search for uhttpd process that matches the web directory and port
+    local PID=\$(ps | awk '/[u]httpd.*-h \/\S*\/\S* -p \S*\/\S* -x \/\S* \S*\/\S* \S*\/\S* \/\S*\/\S* \S* \S* \$WEB_DIR \$PORT/' | awk '{print \$1}')
+    if [ -n "\$PID" ]; then
+        kill "\$PID"
     fi
 }
 
-# Hàm khởi động lại service
 reload_service() {
     stop_service
     start_service
@@ -1384,19 +1343,24 @@ EOF
 chmod +x /etc/init.d/em9190-monitor
 
 # Kích hoạt và khởi động service
-/etc/init.d/em9190-monitor enable
-/etc/init.d/em9190-monitor start
+if [ -f /etc/init.d/em9190-monitor ]; then
+    /etc/init.d/em9190-monitor enable
+    /etc/init.d/em9190-monitor start
+else
+    echo "ERROR: Failed to create /etc/init.d/em9190-monitor script."
+    exit 1
+fi
 
 # --- Thông báo hoàn thành cài đặt ---
 echo ""
 echo "✅ Cài đặt EM9190 Monitor hoàn tất thành công!"
 
 # Lấy địa chỉ IP của interface LAN để hiển thị thông tin truy cập
-LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1") # Mặc định là 192.168.1.1 nếu không lấy được
+LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
 
 echo ""
 echo "🌐 Truy cập EM9190 Monitor tại:"
-echo "   => http://$LAN_IP:9999"
+echo "   => http://$LAN_IP:$PORT"
 echo ""
 echo "🔗 Giao diện OpenWrt gốc vẫn hoạt động bình thường tại:"
 echo "   => http://$LAN_IP (Port 80)"
@@ -1404,12 +1368,12 @@ echo ""
 echo "📂 Các file quan trọng:"
 echo "   - Web UI & API: $WEB_DIR/"
 echo "   - Scripts:      $INSTALL_DIR/scripts/"
-echo "   - Logs:         /var/log/uhttpd_em9190_*.log"
+echo "   - Logs:         /var/log/uhttpd_em9190_*.log, $INSTALL_DIR/logs/em9190_monitor.log"
 echo ""
 echo "📜 Các lệnh quản lý Service:"
 echo "   - Start:   /etc/init.d/em9190-monitor start"
 echo "   - Stop:    /etc/init.d/em9190-monitor stop"
 echo "   - Restart: /etc/init.d/em9190-monitor restart"
-echo "   - Status:  ps | grep 'uhttpd.*9999'"
+echo "   - Status:  /etc/init.d/em9190-monitor status"
 echo ""
 echo "Thoát khỏi chế độ cài đặt."
