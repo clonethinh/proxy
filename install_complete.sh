@@ -4,28 +4,29 @@
 set -e
 
 INSTALL_DIR="/usr/share/em9190-monitor"
-WEB_DIR="/www/em9190"
+WEB_DIR="/www/em9190" # Thư mục web server riêng cho EM9190 Monitor
 CONFIG_NAME="uhttpd_em9190"
 
-echo "🚀 Cài đặt EM9190 Monitor (Thư mục em9190, Port 9999)..."
+echo "🚀 Cài đặt EM9190 Monitor (Thư mục: $INSTALL_DIR, Port: 9999)..."
 
-# Kiểm tra quyền root
+# --- Kiểm tra quyền root ---
 if [ "$(id -u)" != "0" ]; then
-    echo "❌ Script cần chạy với quyền root"
+    echo "❌ Script cần chạy với quyền root. Vui lòng sử dụng 'sudo ./install_complete.sh'"
     exit 1
 fi
 
-# Tạo thư mục cần thiết
+# --- Tạo thư mục cần thiết ---
 echo "📁 Tạo cấu trúc thư mục..."
 mkdir -p "$INSTALL_DIR"/{scripts,config,logs}
 mkdir -p "$WEB_DIR"
 
-# =================== TẠO FILE API.CGI ===================
+# --- Tạo API Handler (/api.cgi) ---
 echo "🔧 Tạo API handler..."
 cat > "$WEB_DIR/api.cgi" << 'EOF'
 #!/bin/sh
 # CGI API handler cho EM9190 Monitor
 
+# Set headers cho JSON response và CORS
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache, no-store, must-revalidate"
 echo "Pragma: no-cache"
@@ -35,72 +36,83 @@ echo "Access-Control-Allow-Methods: GET, POST, OPTIONS"
 echo "Access-Control-Allow-Headers: Content-Type"
 echo ""
 
-# Xử lý OPTIONS request cho CORS
+# Xử lý OPTIONS request cho CORS (preflight requests)
 if [ "$REQUEST_METHOD" = "OPTIONS" ]; then
     exit 0
 fi
 
-# Parse query string
+# --- Parse query string ---
 QUERY_STRING="${QUERY_STRING:-}"
-ACTION="info"
+ACTION="info" # Mặc định là lấy thông tin
 
+# Phân tích action từ query string
 case "$QUERY_STRING" in
     *action=info*) ACTION="info" ;;
     *action=status*) ACTION="status" ;;
     *action=reset*) ACTION="reset" ;;
+    *)
+        # Nếu không có action cụ thể, vẫn sử dụng action mặc định là 'info'
+        ;;
 esac
 
-# Hàm xử lý lỗi
+# --- Hàm xử lý lỗi ---
 error_response() {
+    local message="$1"
     cat <<EOFERR
 {
     "error": true,
-    "message": "$1",
+    "message": "${message:-Unknown error}",
     "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOFERR
     exit 1
 }
 
-# Tự động phát hiện device
+# --- Tự động phát hiện device modem ---
 detect_device() {
+    # Thử các cổng nối tiếp phổ biến cho modem USB
     for dev in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyACM0 /dev/ttyACM1; do
         if [ -e "$dev" ]; then
+            # Kiểm tra xem modem có phản hồi lệnh AT cơ bản trong một khoảng thời gian ngắn không
             if timeout 3 sms_tool -d "$dev" at "AT" >/dev/null 2>&1; then
-                echo "$dev"
+                echo "$dev" # Trả về tên thiết bị nếu tìm thấy
                 return 0
             fi
         fi
     done
-    return 1
+    return 1 # Trả về 1 nếu không tìm thấy thiết bị nào phù hợp
 }
 
-# Xử lý action
+# --- Xử lý các action khác nhau ---
 case "$ACTION" in
     "info")
         DEVICE=$(detect_device)
         if [ -z "$DEVICE" ]; then
-            error_response "No compatible modem device found"
+            error_response "Không tìm thấy thiết bị modem tương thích."
         fi
         
-        if [ -x "/usr/share/em9190-monitor/scripts/em9190_info.sh" ]; then
-            /usr/share/em9190-monitor/scripts/em9190_info.sh "$DEVICE"
+        # Kiểm tra sự tồn tại của script lấy thông tin chi tiết
+        if [ -x "$INSTALL_DIR/scripts/em9190_info.sh" ]; then
+            "$INSTALL_DIR/scripts/em9190_info.sh" "$DEVICE" # Thực thi script
         else
-            error_response "em9190_info.sh script not found"
+            error_response "Script $INSTALL_DIR/scripts/em9190_info.sh không tồn tại hoặc không có quyền thực thi."
         fi
         ;;
         
     "status")
         DEVICE=$(detect_device)
         DEVICE_STATUS="disconnected"
-        [ -n "$DEVICE" ] && DEVICE_STATUS="connected"
+        [ -n "$DEVICE" ] && DEVICE_STATUS="connected" # Đặt trạng thái là 'connected' nếu tìm thấy device
+        
+        # Lấy thông tin uptime của hệ thống
+        UPTIME_INFO=$(uptime | awk '{print $3,$4}' | sed 's/,//')
         
         cat <<EOFSTATUS
 {
     "system_status": "online",
     "device_status": "$DEVICE_STATUS",
     "device_path": "${DEVICE:--}",
-    "uptime": "$(uptime | awk '{print $3,$4}' | sed 's/,//')",
+    "uptime": "$UPTIME_INFO",
     "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOFSTATUS
@@ -109,275 +121,132 @@ EOFSTATUS
     "reset")
         DEVICE=$(detect_device)
         if [ -n "$DEVICE" ]; then
+            # Gửi lệnh AT+CFUN=1,1 để reset modem (chế độ đầy đủ chức năng, reset)
             sms_tool -d "$DEVICE" at "AT+CFUN=1,1" >/dev/null 2>&1
             cat <<EOFRESET
 {
     "success": true,
-    "message": "Modem reset command sent",
+    "message": "Đã gửi lệnh reset modem.",
     "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 EOFRESET
         else
-            error_response "No device found for reset"
+            error_response "Không tìm thấy thiết bị modem để reset."
         fi
         ;;
         
     *)
-        error_response "Invalid action: $ACTION"
+        error_response "Hành động không hợp lệ: $ACTION"
         ;;
 esac
 EOF
 
-# =================== TẠO BAND LOOKUP ===================
-echo "📡 Tạo band lookup functions..."
-cat > "$INSTALL_DIR/scripts/band_lookup.sh" << 'EOF'
-#!/bin/sh
-# Band lookup functions cho EM9190
-
-band4g() {
-    local band_num="$1"
-    echo -n "B${band_num}"
-    
-    case "${band_num}" in
-        "1") echo -n " (2100 MHz)" ;;
-        "2") echo -n " (1900 MHz)" ;;
-        "3") echo -n " (1800 MHz)" ;;
-        "4") echo -n " (1700 MHz)" ;;
-        "5") echo -n " (850 MHz)" ;;
-        "7") echo -n " (2600 MHz)" ;;
-        "8") echo -n " (900 MHz)" ;;
-        "11") echo -n " (1500 MHz)" ;;
-        "12") echo -n " (700 MHz)" ;;
-        "13") echo -n " (700 MHz)" ;;
-        "14") echo -n " (700 MHz)" ;;
-        "17") echo -n " (700 MHz)" ;;
-        "18") echo -n " (850 MHz)" ;;
-        "19") echo -n " (850 MHz)" ;;
-        "20") echo -n " (800 MHz)" ;;
-        "21") echo -n " (1500 MHz)" ;;
-        "24") echo -n " (1600 MHz)" ;;
-        "25") echo -n " (1900 MHz)" ;;
-        "26") echo -n " (850 MHz)" ;;
-        "28") echo -n " (700 MHz)" ;;
-        "29") echo -n " (700 MHz)" ;;
-        "30") echo -n " (2300 MHz)" ;;
-        "31") echo -n " (450 MHz)" ;;
-        "32") echo -n " (1500 MHz)" ;;
-        "34") echo -n " (2000 MHz)" ;;
-        "37") echo -n " (1900 MHz)" ;;
-        "38") echo -n " (2600 MHz)" ;;
-        "39") echo -n " (1900 MHz)" ;;
-        "40") echo -n " (2300 MHz)" ;;
-        "41") echo -n " (2500 MHz)" ;;
-        "42") echo -n " (3500 MHz)" ;;
-        "43") echo -n " (3700 MHz)" ;;
-        "46") echo -n " (5200 MHz)" ;;
-        "47") echo -n " (5900 MHz)" ;;
-        "48") echo -n " (3500 MHz)" ;;
-        "50") echo -n " (1500 MHz)" ;;
-        "51") echo -n " (1500 MHz)" ;;
-        "53") echo -n " (2400 MHz)" ;;
-        "54") echo -n " (1600 MHz)" ;;
-        "65") echo -n " (2100 MHz)" ;;
-        "66") echo -n " (1700 MHz)" ;;
-        "67") echo -n " (700 MHz)" ;;
-        "69") echo -n " (2600 MHz)" ;;
-        "70") echo -n " (1700 MHz)" ;;
-        "71") echo -n " (600 MHz)" ;;
-        "72") echo -n " (450 MHz)" ;;
-        "73") echo -n " (450 MHz)" ;;
-        "74") echo -n " (1500 MHz)" ;;
-        "75") echo -n " (1500 MHz)" ;;
-        "76") echo -n " (1500 MHz)" ;;
-        "85") echo -n " (700 MHz)" ;;
-        "87") echo -n " (410 MHz)" ;;
-        "88") echo -n " (410 MHz)" ;;
-        "103") echo -n " (700 MHz)" ;;
-        "106") echo -n " (900 MHz)" ;;
-        *) echo -n " (Unknown)" ;;
-    esac
-}
-
-band5g() {
-    local band_num="$1"
-    echo -n "n${band_num}"
-    
-    case "${band_num}" in
-        "1") echo -n " (2100 MHz)" ;;
-        "2") echo -n " (1900 MHz)" ;;
-        "3") echo -n " (1800 MHz)" ;;
-        "5") echo -n " (850 MHz)" ;;
-        "7") echo -n " (2600 MHz)" ;;
-        "8") echo -n " (900 MHz)" ;;
-        "12") echo -n " (700 MHz)" ;;
-        "13") echo -n " (700 MHz)" ;;
-        "14") echo -n " (700 MHz)" ;;
-        "18") echo -n " (850 MHz)" ;;
-        "20") echo -n " (800 MHz)" ;;
-        "24") echo -n " (1600 MHz)" ;;
-        "25") echo -n " (1900 MHz)" ;;
-        "26") echo -n " (850 MHz)" ;;
-        "28") echo -n " (700 MHz)" ;;
-        "29") echo -n " (700 MHz)" ;;
-        "30") echo -n " (2300 MHz)" ;;
-        "34") echo -n " (2100 MHz)" ;;
-        "38") echo -n " (2600 MHz)" ;;
-        "39") echo -n " (1900 MHz)" ;;
-        "40") echo -n " (2300 MHz)" ;;
-        "41") echo -n " (2500 MHz)" ;;
-        "46") echo -n " (5200 MHz)" ;;
-        "47") echo -n " (5900 MHz)" ;;
-        "48") echo -n " (3500 MHz)" ;;
-        "50") echo -n " (1500 MHz)" ;;
-        "51") echo -n " (1500 MHz)" ;;
-        "53") echo -n " (2400 MHz)" ;;
-        "54") echo -n " (1600 MHz)" ;;
-        "65") echo -n " (2100 MHz)" ;;
-        "66") echo -n " (1700/2100 MHz)" ;;
-        "67") echo -n " (700 MHz)" ;;
-        "70") echo -n " (2000 MHz)" ;;
-        "71") echo -n " (600 MHz)" ;;
-        "74") echo -n " (1500 MHz)" ;;
-        "75") echo -n " (1500 MHz)" ;;
-        "76") echo -n " (1500 MHz)" ;;
-        "77") echo -n " (3700 MHz)" ;;
-        "78") echo -n " (3500 MHz)" ;;
-        "79") echo -n " (4700 MHz)" ;;
-        "80") echo -n " (1800 MHz)" ;;
-        "81") echo -n " (900 MHz)" ;;
-        "82") echo -n " (800 MHz)" ;;
-        "83") echo -n " (700 MHz)" ;;
-        "84") echo -n " (2100 MHz)" ;;
-        "85") echo -n " (700 MHz)" ;;
-        "86") echo -n " (1700 MHz)" ;;
-        "89") echo -n " (850 MHz)" ;;
-        "90") echo -n " (2500 MHz)" ;;
-        "91") echo -n " (800/1500 MHz)" ;;
-        "92") echo -n " (800/1500 MHz)" ;;
-        "93") echo -n " (900/1500 MHz)" ;;
-        "94") echo -n " (900/1500 MHz)" ;;
-        "95") echo -n " (2100 MHz)" ;;
-        "96") echo -n " (6000 MHz)" ;;
-        "97") echo -n " (2300 MHz)" ;;
-        "98") echo -n " (1900 MHz)" ;;
-        "99") echo -n " (1600 MHz)" ;;
-        "100") echo -n " (900 MHz)" ;;
-        "101") echo -n " (1900 MHz)" ;;
-        "102") echo -n " (6200 MHz)" ;;
-        "104") echo -n " (6700 MHz)" ;;
-        "105") echo -n " (600 MHz)" ;;
-        "106") echo -n " (900 MHz)" ;;
-        "109") echo -n " (700/1500 MHz)" ;;
-        # mmWave bands
-        "257") echo -n " (28 GHz)" ;;
-        "258") echo -n " (26 GHz)" ;;
-        "259") echo -n " (41 GHz)" ;;
-        "260") echo -n " (39 GHz)" ;;
-        "261") echo -n " (28 GHz)" ;;
-        "262") echo -n " (47 GHz)" ;;
-        "263") echo -n " (60 GHz)" ;;
-        *) echo -n " (Unknown)" ;;
-    esac
-}
-
-export -f band4g band5g
-EOF
-
-# =================== TẠO EM9190 INFO SCRIPT ===================
-echo "📊 Tạo modem info script..."
+# --- Tạo Script lấy thông tin Modem (/usr/share/em9190-monitor/scripts/em9190_info.sh) ---
+echo "📊 Tạo script lấy thông tin modem..."
 cat > "$INSTALL_DIR/scripts/em9190_info.sh" << 'EOF'
 #!/bin/sh
-# Script lấy thông tin EM9190
+# Script lấy thông tin chi tiết của modem EM9190
 
-DEVICE="${1:-/dev/ttyUSB0}"
+DEVICE="${1:-}" # Lấy tên thiết bị từ tham số đầu tiên
 
-# Import band lookup functions
-. /usr/share/em9190-monitor/scripts/band_lookup.sh
+if [ -z "$DEVICE" ]; then
+    echo '{"error": true, "message": "Không có tên thiết bị modem nào được cung cấp."}'
+    exit 1
+fi
 
-# Lấy thông tin từ modem
-get_modem_info() {
-    if [ ! -e "$DEVICE" ]; then
-        echo '{"error": true, "message": "Device not found: '$DEVICE'"}'
-        return 1
-    fi
+# Import các hàm tra cứu băng tần
+. "$INSTALL_DIR/scripts/band_lookup.sh"
+
+# --- Lấy thông tin từ modem ---
+# Sử dụng timeout để tránh script bị treo nếu modem không phản hồi
+O=$(timeout 10 sms_tool -d "$DEVICE" at "at!gstatus?" 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$O" ]; then
+    echo '{"error": true, "message": "Không thể giao tiếp với modem hoặc timeout."}'
+    exit 1
+fi
+
+# --- Trích xuất các thông tin cụ thể ---
+
+# Model và Firmware
+MODEL=$(echo "$O" | awk '/^Product/ {getline; print $2}' | tr -d '\r\n')
+FW=$(echo "$O" | awk '/^Revision/ {getline; print $2}' | tr -d '\r\n')
+
+# Nhiệt độ
+TEMP=$(echo "$O" | awk -F: '/Temperature:/ {print $3}' | tr -d '\r\n' | xargs)
+[ -n "$TEMP" ] && TEMP="${TEMP}°C"
+
+# Chế độ mạng (System mode)
+MODE_RAW=$(echo "$O" | awk '/^System mode:/ {print $3}')
+case "$MODE_RAW" in
+    "LTE") MODE="LTE" ;;
+    "ENDC") MODE="5G NSA" ;; # 5G Non-Standalone
+    "NR") MODE="5G SA" ;; # 5G Standalone (ít phổ biến hơn trên modem này)
+    *) MODE="Unknown" ;;
+esac
+
+# TAC (Tracking Area Code)
+TAC_HEX=$(echo "$O" | awk '/.*TAC:/ {print $6}')
+TAC_DEC=""
+if [ -n "$TAC_HEX" ]; then
+    # Chuyển đổi Hex sang Dec nếu có thể
+    TAC_DEC=$(printf "%d" "0x$TAC_HEX" 2>/dev/null)
+fi
+
+# Thông số tín hiệu (Lấy từ Primary Carrier - PCC)
+RSSI=$(echo "$O" | awk '/^PCC.*RSSI/ {print $4}' | xargs)
+RSRP=$(echo "$O" | awk '/^PCC.*RSRP/ {print $8}' | xargs)
+RSRQ=$(echo "$O" | awk '/^RSRQ/ {print $3}') # RSRQ chung
+SINR=$(echo "$O" | awk '/^SINR/ {print $3}') # SINR chung
+
+# Băng tần LTE chính (Primary Band)
+LTE_BAND_RAW=$(echo "$O" | awk '/^LTE band:/ {print $3}')
+LTE_BW=""
+if [ -n "$LTE_BAND_RAW" ] && [ "$LTE_BAND_RAW" != "---" ]; then
+    LTE_BW=$(echo "$O" | awk '/^LTE band:/ {print $6}' | tr -d '\r')
+    PBAND="$(band4g ${LTE_BAND_RAW/B/}) @${LTE_BW} MHz"
+fi
+
+# Các băng tần Secondary Carriers (SCC)
+S1BAND="-"
+SCC1_BAND_RAW=$(echo "$O" | awk -F: '/^LTE SCC1 state:.*ACTIVE/ {print $3}')
+if [ -n "$SCC1_BAND_RAW" ] && [ "$SCC1_BAND_RAW" != "---" ]; then
+    SCC1_BW=$(echo "$O" | awk '/^LTE SCC1 bw/ {print $5}' | tr -d '\r')
+    S1BAND="$(band4g ${SCC1_BAND_RAW/B/}) @${SCC1_BW} MHz"
+    # Nếu có SCC, cập nhật chế độ mạng là LTE-A (Carrier Aggregation)
+    [ "$MODE" = "LTE" ] && MODE="LTE-A"
+fi
+
+# Băng tần 5G NR (nếu có)
+NR5G_BAND="-"
+NR_BAND_RAW=""
+NR_BAND_RAW=$(echo "$O" | awk '/SCC. NR5G band:/ {print $4}')
+
+if [ -n "$NR_BAND_RAW" ] && [ "$NR_BAND_RAW" != "---" ]; then
+    NR_BW=$(echo "$O" | awk '/SCC.*SCC. NR5G bw:/ {print $8}' | tr -d '\r')
+    NR5G_BAND="$(band5g ${NR_BAND_RAW/n/}) @${NR_BW} MHz"
     
-    O=$(timeout 10 sms_tool -d $DEVICE at "at!gstatus?" 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        echo '{"error": true, "message": "Failed to communicate with modem"}'
-        return 1
-    fi
+    # Ghi đè thông số tín hiệu nếu có dữ liệu 5G NR
+    NR_RSRP=$(echo "$O" | awk '/SCC. NR5G RSRP:/ {print $4}' | xargs)
+    [ -n "$NR_RSRP" ] && RSRP="$NR_RSRP" # Ưu tiên RSRP của 5G nếu có
     
-    # Model và Firmware
-    MODEL=$(timeout 5 sms_tool -d "$DEVICE" at "AT+CGMM" 2>/dev/null | sed -n '2p' | tr -d '\r\n')
-    FW=$(timeout 5 sms_tool -d "$DEVICE" at "AT+CGMR" 2>/dev/null | sed -n '2p' | tr -d '\r\n')
+    NR_RSRQ=$(echo "$O" | awk '/SCC. NR5G RSRQ:/ {print $4}' | xargs)
+    [ -n "$NR_RSRQ" ] && RSRQ="$NR_RSRQ"
     
-    # Nhiệt độ
-    TEMP=$(echo "$O" | awk -F: '/Temperature:/ {print $3}' | tr -d '\r\n' | xargs)
-    [ -n "$TEMP" ] && TEMP="$TEMP °C"
-    
-    # Chế độ mạng
-    MODE_RAW=$(echo "$O" | awk '/^System mode:/ {print $3}')
-    case $MODE_RAW in
-        "LTE") MODE="LTE" ;;
-        "ENDC") MODE="5G NSA" ;;
-        *) MODE="Unknown" ;;
-    esac
-    
-    # TAC
-    TAC_HEX=$(echo "$O" | awk '/.*TAC:/ {print $6}')
-    if [ -n "$TAC_HEX" ]; then
-        TAC_DEC=$(printf "%d" "0x$TAC_HEX" 2>/dev/null)
-    fi
-    
-    # Thông số tín hiệu LTE
-    RSSI=$(echo "$O" | awk '/^PCC.*RSSI/ {print $4}' | xargs)
-    RSRP=$(echo "$O" | awk '/^PCC.*RSRP/ {print $8}' | xargs)
-    RSRQ=$(echo "$O" | awk '/^RSRQ/ {print $3}')
-    SINR=$(echo "$O" | awk '/^SINR/ {print $3}')
-    
-    # Băng tần LTE chính
-    LTE_BAND=$(echo "$O" | awk '/^LTE band:/ {print $3}')
-    if [ -n "$LTE_BAND" ]; then
-        LTE_BW=$(echo "$O" | awk '/^LTE band:/ {print $6}')
-        PBAND="$(band4g ${LTE_BAND/B/}) @${LTE_BW} MHz"
-    fi
-    
-    # Secondary Carriers
-    SCC1_BAND=$(echo "$O" | awk -F: '/^LTE SCC1 state:.*ACTIVE/ {print $3}')
-    if [ -n "$SCC1_BAND" ]; then
-        SCC1_BW=$(echo "$O" | awk '/^LTE SCC1 bw/ {print $5}')
-        S1BAND="$(band4g ${SCC1_BAND/B/}) @${SCC1_BW} MHz"
-        MODE="${MODE/LTE/LTE-A}"
-    fi
-    
-    # 5G NR Band
-    NR_BAND=$(echo "$O" | awk '/^SCC. NR5G band:/ {print $4}')
-    if [ -n "$NR_BAND" ] && [ "$NR_BAND" != "---" ]; then
-        NR_BW=$(echo "$O" | awk '/^SCC.*SCC. NR5G bw:/ {print $8}')
-        NR5G_BAND="$(band5g ${NR_BAND/n/}) @${NR_BW} MHz"
-        
-        # Ghi đè thông số 5G
-        NR_RSRP=$(echo "$O" | awk '/SCC. NR5G RSRP:/ {print $4}')
-        [ -n "$NR_RSRP" ] && RSRP="$NR_RSRP"
-        
-        NR_RSRQ=$(echo "$O" | awk '/SCC. NR5G RSRQ:/ {print $4}')
-        [ -n "$NR_RSRQ" ] && RSRQ="$NR_RSRQ"
-        
-        NR_SINR=$(echo "$O" | awk '/SCC. NR5G SINR:/ {print $4}')
-        [ -n "$NR_SINR" ] && SINR="$NR_SINR"
-    fi
-    
-    # Xuất JSON
-    cat <<EOFINFO
+    NR_SINR=$(echo "$O" | awk '/SCC. NR5G SINR:/ {print $4}' | xargs)
+    [ -n "$NR_SINR" ] && SINR="$NR_SINR"
+fi
+
+# --- Xuất kết quả dưới dạng JSON ---
+cat <<EOFINFO
 {
     "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')",
     "modem": "${MODEL:-Unknown}",
     "firmware": "${FW:-Unknown}",
     "temperature": "${TEMP:--}",
     "mode": "${MODE:-Unknown}",
-    "primary_band": "${PBAND:--}",
-    "secondary_band": "${S1BAND:--}",
-    "nr5g_band": "${NR5G_BAND:--}",
+    "primary_band": "${PBAND:- -}",
+    "secondary_band": "${S1BAND:- -}",
+    "nr5g_band": "${NR5G_BAND:- -}",
     "tac_hex": "${TAC_HEX:--}",
     "tac_dec": "${TAC_DEC:--}",
     "signal": {
@@ -388,13 +257,86 @@ get_modem_info() {
     }
 }
 EOFINFO
-}
-
-# Gọi hàm chính
-get_modem_info
 EOF
 
-# =================== TẠO GIAO DIỆN WEB ===================
+# --- Tạo Script tra cứu Băng tần (/usr/share/em9190-monitor/scripts/band_lookup.sh) ---
+echo "📡 Tạo script tra cứu băng tần..."
+cat > "$INSTALL_DIR/scripts/band_lookup.sh" << 'EOF'
+#!/bin/sh
+# Các hàm tra cứu tên và tần số của băng tần mạng di động
+
+# Hàm tra cứu băng tần 4G LTE
+band4g() {
+    local band_num="$1"
+    echo -n "B${band_num}" # Trả về định dạng B<số>
+    
+    # Tra cứu tần số tương ứng với số băng tần
+    case "${band_num}" in
+        "1") echo -n " (2100 MHz)" ;; "2") echo -n " (1900 MHz)" ;; "3") echo -n " (1800 MHz)" ;;
+        "4") echo -n " (1700 MHz)" ;; "5") echo -n " (850 MHz)" ;; "7") echo -n " (2600 MHz)" ;;
+        "8") echo -n " (900 MHz)" ;; "11") echo -n " (1500 MHz)" ;; "12") echo -n " (700 MHz)" ;;
+        "13") echo -n " (700 MHz)" ;; "14") echo -n " (700 MHz)" ;; "17") echo -n " (700 MHz)" ;;
+        "18") echo -n " (850 MHz)" ;; "19") echo -n " (850 MHz)" ;; "20") echo -n " (800 MHz)" ;;
+        "21") echo -n " (1500 MHz)" ;; "24") echo -n " (1600 MHz)" ;; "25") echo -n " (1900 MHz)" ;;
+        "26") echo -n " (850 MHz)" ;; "28") echo -n " (700 MHz)" ;; "29") echo -n " (700 MHz)" ;;
+        "30") echo -n " (2300 MHz)" ;; "31") echo -n " (450 MHz)" ;; "32") echo -n " (1500 MHz)" ;;
+        "34") echo -n " (2000 MHz)" ;; "37") echo -n " (1900 MHz)" ;; "38") echo -n " (2600 MHz)" ;;
+        "39") echo -n " (1900 MHz)" ;; "40") echo -n " (2300 MHz)" ;; "41") echo -n " (2500 MHz)" ;;
+        "42") echo -n " (3500 MHz)" ;; "43") echo -n " (3700 MHz)" ;; "46") echo -n " (5200 MHz)" ;;
+        "47") echo -n " (5900 MHz)" ;; "48") echo -n " (3500 MHz)" ;; "50") echo -n " (1500 MHz)" ;;
+        "51") echo -n " (1500 MHz)" ;; "53") echo -n " (2400 MHz)" ;; "54") echo -n " (1600 MHz)" ;;
+        "65") echo -n " (2100 MHz)" ;; "66") echo -n " (1700 MHz)" ;; "67") echo -n " (700 MHz)" ;;
+        "69") echo -n " (2600 MHz)" ;; "70") echo -n " (1700 MHz)" ;; "71") echo -n " (600 MHz)" ;;
+        "72") echo -n " (450 MHz)" ;; "73") echo -n " (450 MHz)" ;; "74") echo -n " (1500 MHz)" ;;
+        "75") echo -n " (1500 MHz)" ;; "76") echo -n " (1500 MHz)" ;; "85") echo -n " (700 MHz)" ;;
+        "87") echo -n " (410 MHz)" ;; "88") echo -n " (410 MHz)" ;; "103") echo -n " (700 MHz)" ;;
+        "106") echo -n " (900 MHz)" ;;
+        *) echo -n " (Unknown)" ;; # Trường hợp không xác định
+    esac
+}
+
+# Hàm tra cứu băng tần 5G NR
+band5g() {
+    local band_num="$1"
+    echo -n "n${band_num}" # Trả về định dạng n<số>
+    
+    # Tra cứu tần số tương ứng với số băng tần
+    case "${band_num}" in
+        "1") echo -n " (2100 MHz)" ;; "2") echo -n " (1900 MHz)" ;; "3") echo -n " (1800 MHz)" ;;
+        "5") echo -n " (850 MHz)" ;; "7") echo -n " (2600 MHz)" ;; "8") echo -n " (900 MHz)" ;;
+        "12") echo -n " (700 MHz)" ;; "13") echo -n " (700 MHz)" ;; "14") echo -n " (700 MHz)" ;;
+        "18") echo -n " (850 MHz)" ;; "20") echo -n " (800 MHz)" ;; "24") echo -n " (1600 MHz)" ;;
+        "25") echo -n " (1900 MHz)" ;; "26") echo -n " (850 MHz)" ;; "28") echo -n " (700 MHz)" ;;
+        "29") echo -n " (700 MHz)" ;; "30") echo -n " (2300 MHz)" ;; "34") echo -n " (2100 MHz)" ;;
+        "38") echo -n " (2600 MHz)" ;; "39") echo -n " (1900 MHz)" ;; "40") echo -n " (2300 MHz)" ;;
+        "41") echo -n " (2500 MHz)" ;; "46") echo -n " (5200 MHz)" ;; "47") echo -n " (5900 MHz)" ;;
+        "48") echo -n " (3500 MHz)" ;; "50") echo -n " (1500 MHz)" ;; "51") echo -n " (1500 MHz)" ;;
+        "53") echo -n " (2400 MHz)" ;; "54") echo -n " (1600 MHz)" ;; "65") echo -n " (2100 MHz)" ;;
+        "66") echo -n " (1700/2100 MHz)" ;; "67") echo -n " (700 MHz)" ;; "70") echo -n " (2000 MHz)" ;;
+        "71") echo -n " (600 MHz)" ;; "74") echo -n " (1500 MHz)" ;; "75") echo -n " (1500 MHz)" ;;
+        "76") echo -n " (1500 MHz)" ;; "77") echo -n " (3700 MHz)" ;; "78") echo -n " (3500 MHz)" ;;
+        "79") echo -n " (4700 MHz)" ;; "80") echo -n " (1800 MHz)" ;; "81") echo -n " (900 MHz)" ;;
+        "82") echo -n " (800 MHz)" ;; "83") echo -n " (700 MHz)" ;; "84") echo -n " (2100 MHz)" ;;
+        "85") echo -n " (700 MHz)" ;; "86") echo -n " (1700 MHz)" ;; "89") echo -n " (850 MHz)" ;;
+        "90") echo -n " (2500 MHz)" ;; "91") echo -n " (800/1500 MHz)" ;; "92") echo -n " (800/1500 MHz)" ;;
+        "93") echo -n " (900/1500 MHz)" ;; "94") echo -n " (900/1500 MHz)" ;; "95") echo -n " (2100 MHz)" ;;
+        "96") echo -n " (6000 MHz)" ;; "97") echo -n " (2300 MHz)" ;; "98") echo -n " (1900 MHz)" ;;
+        "99") echo -n " (1600 MHz)" ;; "100") echo -n " (900 MHz)" ;; "101") echo -n " (1900 MHz)" ;;
+        "102") echo -n " (6200 MHz)" ;; "104") echo -n " (6700 MHz)" ;; "105") echo -n " (600 MHz)" ;;
+        "106") echo -n " (900 MHz)" ;; "109") echo -n " (700/1500 MHz)" ;;
+        # mmWave bands (VHF/UHF bands)
+        "257") echo -n " (28 GHz)" ;; "258") echo -n " (26 GHz)" ;; "259") echo -n " (41 GHz)" ;;
+        "260") echo -n " (39 GHz)" ;; "261") echo -n " (28 GHz)" ;; "262") echo -n " (47 GHz)" ;;
+        "263") echo -n " (60 GHz)" ;;
+        *) echo -n " (Unknown)" ;; # Trường hợp không xác định
+    esac
+}
+
+# Xuất các hàm để có thể import ở script khác
+export -f band4g band5g
+EOF
+
+# --- Tạo Giao diện Web (index.html) ---
 echo "🌐 Tạo giao diện web..."
 cat > "$WEB_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
@@ -924,7 +866,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             </button>
         </div>
         
-        <!-- NEW SECTION: Refresh Controls -->
+        <!-- SECTION: Refresh Controls -->
         <div class="refresh-controls">
             <label for="refresh-interval">Tự động làm mới sau:</label>
             <select id="refresh-interval">
@@ -1279,38 +1221,42 @@ cat > "$WEB_DIR/index.html" << 'EOF'
 </html>
 EOF
 
-# =================== PHÂN QUYỀN ===================
+# --- Thiết lập quyền truy cập cho các file ---
 echo "🔐 Thiết lập quyền truy cập..."
 chmod +x "$INSTALL_DIR/scripts/"*.sh
 chmod +x "$WEB_DIR/api.cgi"
 chmod 644 "$WEB_DIR/index.html"
 
-# =================== TẠO LOG FILES ===================
+# --- Tạo file log cho uhttpd riêng của EM9190 Monitor ---
+echo "✍️ Tạo file log..."
 touch /var/log/uhttpd_em9190_access.log
 touch /var/log/uhttpd_em9190_error.log
 
-# =================== KIỂM TRA DEPENDENCIES ===================
+# --- Kiểm tra các dependencies cần thiết ---
 echo "🔍 Kiểm tra dependencies..."
 MISSING_DEPS=""
 
+# Kiểm tra sự tồn tại của sms_tool
 if ! command -v sms_tool >/dev/null 2>&1; then
     MISSING_DEPS="$MISSING_DEPS sms_tool"
 fi
 
+# Kiểm tra sự tồn tại của uhttpd (cần cho web server)
+# Lưu ý: uhttpd thường có sẵn trên OpenWrt, nhưng vẫn kiểm tra
 if ! command -v uhttpd >/dev/null 2>&1; then
     MISSING_DEPS="$MISSING_DEPS uhttpd"
 fi
 
 if [ -n "$MISSING_DEPS" ]; then
-    echo "⚠️ Thiếu dependencies: $MISSING_DEPS"
-    echo "Cài đặt bằng: opkg update && opkg install$MISSING_DEPS"
+    echo "⚠️ Cảnh báo: Thiếu các gói cần thiết: $MISSING_DEPS"
+    echo "   Vui lòng cài đặt bằng lệnh: opkg update && opkg install $MISSING_DEPS"
     exit 1
 fi
 
-# =================== KHỞI ĐỘNG BẰNG UHTTPD STANDALONE ===================
-echo "🚀 Khởi động EM9190 Monitor trên port 9999..."
+# --- Cấu hình và khởi động uhttpd độc lập cho EM9190 Monitor ---
+echo "🚀 Khởi động EM9190 Monitor web server trên port 9999..."
 
-# Tạo script khởi động
+# Tạo script init cho service
 cat > /etc/init.d/em9190-monitor << 'EOF'
 #!/bin/sh /etc/rc.common
 
@@ -1320,56 +1266,66 @@ STOP=10
 USE_PROCD=1
 PROG=/usr/sbin/uhttpd
 
+# Hàm khởi động service
 start_service() {
-    procd_open_instance
+    procd_open_instance # Mở một instance mới cho uhttpd
+    # Cấu hình uhttpd:
+    # -f: Chạy ở chế độ foreground
+    # -h /www/em9190: Sử dụng /www/em9190 làm thư mục gốc web
+    # -p 9999: Lắng nghe trên port 9999
+    # -x /cgi-bin: Chỉ định thư mục cho các script CGI (dù ta đang dùng /api.cgi trực tiếp)
+    # -t 60: Timeout cho kết nối là 60 giây
     procd_set_param command $PROG -f -h /www/em9190 -p 9999 -x /cgi-bin -t 60
-    procd_set_param respawn
-    procd_close_instance
+    procd_set_param respawn # Tự động khởi động lại nếu uhttpd bị lỗi
+    procd_close_instance # Đóng instance
 }
 
+# Hàm dừng service
 stop_service() {
-    # Chỉ kill instance của em9190, không ảnh hưởng uhttpd chính
-    local PID=$(ps | grep "uhttpd.*9999" | grep -v grep | awk '{print $1}')
-    [ -n "$PID" ] && kill $PID
+    # Tìm và dừng PID của uhttpd đang chạy trên port 9999
+    local PID=$(ps | grep "[u]httpd.*-p 9999" | awk '{print $1}')
+    if [ -n "$PID" ]; then
+        kill $PID
+    fi
 }
 
+# Hàm khởi động lại service
 reload_service() {
-    stop
-    start
+    stop_service
+    start_service
 }
 EOF
 
+# Cấp quyền thực thi cho script init
 chmod +x /etc/init.d/em9190-monitor
 
-# Enable và start service
+# Kích hoạt và khởi động service
 /etc/init.d/em9190-monitor enable
 /etc/init.d/em9190-monitor start
 
-# =================== THÔNG BÁO HOÀN THÀNH ===================
-LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
+# --- Thông báo hoàn thành cài đặt ---
+echo ""
+echo "✅ Cài đặt EM9190 Monitor hoàn tất thành công!"
+
+# Lấy địa chỉ IP của interface LAN để hiển thị thông tin truy cập
+LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1") # Mặc định là 192.168.1.1 nếu không lấy được
 
 echo ""
-echo "✅ Cài đặt hoàn tất!"
 echo "🌐 Truy cập EM9190 Monitor tại:"
-echo "   - EM9190 Monitor: http://$LAN_IP:9999"
-echo "   - OpenWrt Web:    http://$LAN_IP (port 80)"
+echo "   => http://$LAN_IP:9999"
 echo ""
-echo "📂 Cấu trúc thư mục:"
-echo "   - Web files:  /www/em9190/"
-echo "   - Scripts:    /usr/share/em9190-monitor/scripts/"
-echo "   - Logs:       /var/log/uhttpd_em9190_*.log"
+echo "🔗 Giao diện OpenWrt gốc vẫn hoạt động bình thường tại:"
+echo "   => http://$LAN_IP (Port 80)"
 echo ""
-echo "📊 API endpoints:"
-echo "   - /api.cgi?action=info   - Thông tin modem"
-echo "   - /api.cgi?action=status - Trạng thái hệ thống"
-echo "   - /api.cgi?action=reset  - Reset modem"
+echo "📂 Các file quan trọng:"
+echo "   - Web UI & API: $WEB_DIR/"
+echo "   - Scripts:      $INSTALL_DIR/scripts/"
+echo "   - Logs:         /var/log/uhttpd_em9190_*.log"
 echo ""
-echo "🔧 Quản lý service:"
+echo "📜 Các lệnh quản lý Service:"
 echo "   - Start:   /etc/init.d/em9190-monitor start"
 echo "   - Stop:    /etc/init.d/em9190-monitor stop"
 echo "   - Restart: /etc/init.d/em9190-monitor restart"
 echo "   - Status:  ps | grep 'uhttpd.*9999'"
 echo ""
-echo "🔗 Navigation:"
-echo "   - Từ EM9190 Monitor có link về OpenWrt Home"
-echo "   - Hai web server chạy độc lập không xung đột"
+echo "Thoát khỏi chế độ cài đặt."
