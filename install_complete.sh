@@ -26,103 +26,154 @@ cat > "$WEB_DIR/api.cgi" << 'EOF'
 #!/bin/sh
 # CGI API handler cho EM9190 Monitor
 
-# Set headers cho JSON response và CORS
+# --- Cấu hình Header ---
+# Set headers cho JSON response và hỗ trợ CORS (Cross-Origin Resource Sharing)
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache, no-store, must-revalidate"
 echo "Pragma: no-cache"
 echo "Expires: 0"
-echo "Access-Control-Allow-Origin: *"
-echo "Access-Control-Allow-Methods: GET, POST, OPTIONS"
-echo "Access-Control-Allow-Headers: Content-Type"
-echo ""
+echo "Access-Control-Allow-Origin: *" # Cho phép mọi domain truy cập
+echo "Access-Control-Allow-Methods: GET, POST, OPTIONS" # Các phương thức HTTP được phép
+echo "Access-Control-Allow-Headers: Content-Type" # Các header được phép
+echo "" # Kết thúc phần header
 
-# Xử lý OPTIONS request cho CORS (preflight requests)
+# --- Xử lý OPTIONS Request ---
+# Các trình duyệt gửi request OPTIONS trước khi gửi request chính (ví dụ: POST, PUT)
+# để kiểm tra quyền truy cập (CORS preflight). Ta chỉ cần trả về thành công cho request này.
 if [ "$REQUEST_METHOD" = "OPTIONS" ]; then
     exit 0
 fi
 
-# --- Parse query string ---
-QUERY_STRING="${QUERY_STRING:-}"
-ACTION="info" # Mặc định là lấy thông tin
+# --- Parse Query String ---
+QUERY_STRING="${QUERY_STRING:-}" # Lấy query string, nếu rỗng thì gán là ""
+ACTION="info" # Mặc định là lấy thông tin modem
 
-# Phân tích action từ query string
+# Phân tích action từ query string. Tìm kiếm chuỗi "action=" và lấy giá trị phía sau.
 case "$QUERY_STRING" in
     *action=info*) ACTION="info" ;;
     *action=status*) ACTION="status" ;;
     *action=reset*) ACTION="reset" ;;
     *)
-        # Nếu không có action cụ thể, vẫn sử dụng action mặc định là 'info'
+        # Nếu không tìm thấy action cụ thể trong query string,
+        # thì vẫn sử dụng action mặc định là 'info'.
         ;;
 esac
 
-# --- Hàm xử lý lỗi ---
+# --- Hàm Trả về Lỗi ---
+# Hàm này in ra một JSON chứa thông báo lỗi và thoát script với mã lỗi 1.
 error_response() {
-    local message="$1"
+    local message="$1" # Lấy thông báo lỗi từ tham số đầu tiên
     cat <<EOFERR
 {
     "error": true,
-    "message": "${message:-Unknown error}",
-    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "message": "${message:-Lỗi không xác định}", # Sử dụng thông báo lỗi hoặc mặc định
+    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')" # Thêm dấu thời gian
 }
 EOFERR
-    exit 1
+    exit 1 # Thoát với mã lỗi 1 (thường chỉ lỗi)
 }
 
-# --- Tự động phát hiện device modem ---
+# --- Hàm Tự động Phát hiện Thiết bị Modem ---
+# Hàm này cố gắng tìm ra cổng nối tiếp mà modem đang kết nối.
 detect_device() {
-    # Thử các cổng nối tiếp phổ biến cho modem USB
+    # Thử các đường dẫn thiết bị phổ biến cho modem USB, theo thứ tự ưu tiên.
     for dev in /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0 /dev/ttyACM0 /dev/ttyACM1; do
+        # Kiểm tra xem tệp thiết bị có tồn tại không
         if [ -e "$dev" ]; then
-            # Kiểm tra xem modem có phản hồi lệnh AT cơ bản trong một khoảng thời gian ngắn không
+            # Sử dụng 'sms_tool' để gửi lệnh AT cơ bản ("AT") đến thiết bị.
+            # 'timeout 3' đảm bảo lệnh không bị treo quá 3 giây.
+            # '>/dev/null 2>&1' bỏ qua mọi output hoặc lỗi từ lệnh sms_tool.
             if timeout 3 sms_tool -d "$dev" at "AT" >/dev/null 2>&1; then
-                echo "$dev" # Trả về tên thiết bị nếu tìm thấy
-                return 0
+                echo "$dev" # Nếu lệnh AT thành công, trả về tên thiết bị
+                return 0 # Thoát với mã 0 (thành công)
             fi
         fi
     done
-    return 1 # Trả về 1 nếu không tìm thấy thiết bị nào phù hợp
+    return 1 # Trả về 1 (lỗi) nếu không tìm thấy thiết bị nào phù hợp
 }
 
-# --- Xử lý các action khác nhau ---
+# --- Xử lý các Action ---
 case "$ACTION" in
     "info")
+        # Lấy tên thiết bị modem
         DEVICE=$(detect_device)
+        # Nếu không tìm thấy thiết bị, trả về lỗi
         if [ -z "$DEVICE" ]; then
             error_response "Không tìm thấy thiết bị modem tương thích."
         fi
         
-        # Kiểm tra sự tồn tại của script lấy thông tin chi tiết
+        # Kiểm tra xem script lấy thông tin chi tiết có tồn tại và có thể thực thi không
         if [ -x "$INSTALL_DIR/scripts/em9190_info.sh" ]; then
-            "$INSTALL_DIR/scripts/em9190_info.sh" "$DEVICE" # Thực thi script
+            # Thực thi script lấy thông tin và in kết quả ra stdout
+            "$INSTALL_DIR/scripts/em9190_info.sh" "$DEVICE"
         else
+            # Nếu script không tồn tại hoặc không có quyền thực thi, trả về lỗi
             error_response "Script $INSTALL_DIR/scripts/em9190_info.sh không tồn tại hoặc không có quyền thực thi."
         fi
         ;;
         
     "status")
+        # Lấy tên thiết bị modem
         DEVICE=$(detect_device)
-        DEVICE_STATUS="disconnected"
-        [ -n "$DEVICE" ] && DEVICE_STATUS="connected" # Đặt trạng thái là 'connected' nếu tìm thấy device
+        DEVICE_STATUS="disconnected" # Mặc định trạng thái là disconnected
+        # Nếu tìm thấy thiết bị, cập nhật trạng thái là connected
+        [ -n "$DEVICE" ] && DEVICE_STATUS="connected"
+        
+        # --- Lấy địa chỉ IP WAN ---
+        # Cách lấy IP WAN có thể khác nhau tùy thuộc vào cấu hình mạng OpenWrt của bạn.
+        # Dưới đây là một số phương pháp phổ biến, bạn có thể cần điều chỉnh cho phù hợp.
+        
+        WAN_IP="-" # Mặc định IP là "-"
+        
+        # Phương pháp 1: Kiểm tra interface 'eth1' (thường là WAN trên một số router)
+        if command -v ifconfig >/dev/null 2>&1; then
+            WAN_IP=$(ifconfig eth1 | grep 'inet addr:' | awk -F: '{print $2}' | awk '{print $1}')
+        fi
+        
+        # Phương pháp 2: Sử dụng 'ip route' để tìm default gateway (thường là router của nhà mạng)
+        if [ -z "$WAN_IP" ] && command -v ip >/dev/null 2>&1; then
+            WAN_IP=$(ip route show default | grep default | awk '/default via/ {print $3}' | head -n 1)
+        fi
+        
+        # Phương pháp 3: Kiểm tra 'ip addr' cho các interface có thể là WWAN (tùy thuộc modem)
+        if [ -z "$WAN_IP" ]; then
+             # Thử lấy IP từ interface có thể là WWAN, ví dụ 'wwan0' hoặc 'ppp0'
+             WAN_IP=$(ip addr show wwan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+             [ -z "$WAN_IP" ] && WAN_IP=$(ip addr show ppp0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1)
+        fi
+        
+        # Nếu sau tất cả mà WAN_IP vẫn rỗng, giữ giá trị mặc định "-"
+        WAN_IP="${WAN_IP:-"-"}"
         
         # Lấy thông tin uptime của hệ thống
         UPTIME_INFO=$(uptime | awk '{print $3,$4}' | sed 's/,//')
         
+        # Trả về JSON chứa trạng thái hệ thống và IP WAN
         cat <<EOFSTATUS
 {
     "system_status": "online",
-    "device_status": "$DEVICE_STATUS",
-    "device_path": "${DEVICE:--}",
-    "uptime": "$UPTIME_INFO",
-    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')"
+    "device_status": "$DEVICE_STATUS",     # Trạng thái kết nối modem: "connected" hoặc "disconnected"
+    "wan_ip": "$WAN_IP",                   # Địa chỉ IP WAN của kết nối di động
+    "device_path": "${DEVICE:--}",         # Đường dẫn thiết bị modem (/dev/tty...)
+    "uptime": "$UPTIME_INFO",              # Thời gian hoạt động của hệ thống OpenWrt
+    "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')" # Thời gian hiện tại
 }
 EOFSTATUS
         ;;
         
     "reset")
+        # Lấy tên thiết bị modem
         DEVICE=$(detect_device)
+        # Chỉ thực hiện reset nếu tìm thấy thiết bị
         if [ -n "$DEVICE" ]; then
-            # Gửi lệnh AT+CFUN=1,1 để reset modem (chế độ đầy đủ chức năng, reset)
+            # Gửi lệnh AT+CFUN=1,1 để reset modem.
+            # Lệnh này có nghĩa là:
+            # CFUN = 0: Minimum functionality (chỉ cho phép nghe/gọi)
+            # CFUN = 1: Full functionality (cho phép mọi chức năng)
+            # CFUN = 4: Flight mode (tắt mọi chức năng radio)
+            # CFUN = 1,1: Full functionality, và reset modem.
             sms_tool -d "$DEVICE" at "AT+CFUN=1,1" >/dev/null 2>&1
+            # Trả về JSON thông báo lệnh đã được gửi
             cat <<EOFRESET
 {
     "success": true,
@@ -131,11 +182,13 @@ EOFSTATUS
 }
 EOFRESET
         else
+            # Nếu không tìm thấy thiết bị, trả về lỗi
             error_response "Không tìm thấy thiết bị modem để reset."
         fi
         ;;
         
     *)
+        # Nếu action không hợp lệ (ví dụ: query string không chứa action hoặc action không xác định)
         error_response "Hành động không hợp lệ: $ACTION"
         ;;
 esac
@@ -415,6 +468,8 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             backdrop-filter: blur(8px);
             font-weight: 600;
             font-size: 1.1em;
+            flex-wrap: wrap; /* Allow wrapping for IP address */
+            justify-content: center; /* Center items if they wrap */
         }
 
         .status-indicator .dot {
@@ -607,7 +662,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             background: #D32F2F; /* Darker red */
         }
         
-        /* Refresh interval controls - Moved up and styled for better placement */
+        /* Refresh interval controls */
         .refresh-controls {
             margin-top: 25px; /* Add space above this section */
             margin-bottom: 30px; /* Add space below this section */
@@ -704,6 +759,8 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                 font-size: 1em;
                 padding: 8px 16px;
                 gap: 8px;
+                flex-direction: column; /* Stack items vertically */
+                align-items: center;
             }
             .status-indicator .dot {
                 width: 12px;
@@ -804,6 +861,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
             <div class="status-indicator">
                 <span class="dot" id="status-dot"></span>
                 <span id="status-text">Đang tải dữ liệu...</span>
+                <span id="wan-ip-display"></span> <!-- NEW: Span to display WAN IP -->
             </div>
         </header>
 
@@ -895,6 +953,7 @@ cat > "$WEB_DIR/index.html" << 'EOF'
 
                 this.statusDot = document.getElementById('status-dot');
                 this.statusText = document.getElementById('status-text');
+                this.wanIpDisplay = document.getElementById('wan-ip-display'); // Get the new span element
                 this.refreshIntervalSelect = document.getElementById('refresh-interval');
                 this.refreshTimerDisplay = document.getElementById('refresh-timer');
                 this.autoRefreshToggleButton = document.getElementById('auto-refresh-icon').closest('button');
@@ -918,26 +977,38 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                 this.startAutoRefresh(); // Start the auto-refresh cycle
             }
 
-            // Fetches data from the API
+            // Fetches data from the API (both info and status for IP)
             async updateData() {
                 try {
-                    const response = await fetch('/api.cgi?action=info');
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                    // Fetch modem info
+                    const infoResponse = await fetch('/api.cgi?action=info');
+                    if (!infoResponse.ok) {
+                        throw new Error(`HTTP error! status: ${infoResponse.status}`);
                     }
-                    const data = await response.json();
+                    const infoData = await infoResponse.json();
 
-                    if (data.error) {
-                        throw new Error(data.message || 'Unknown API error');
+                    if (infoData.error) {
+                        throw new Error(infoData.message || 'Unknown API error for info');
                     }
+                    this.updateUI(infoData);
 
-                    this.updateUI(data);
-                    this.setConnectionStatus(true);
+                    // Fetch system status (including WAN IP)
+                    const statusResponse = await fetch('/api.cgi?action=status');
+                    if (!statusResponse.ok) {
+                        throw new Error(`HTTP error! status: ${statusResponse.status}`);
+                    }
+                    const statusData = await statusResponse.json();
+
+                    if (statusData.error) {
+                        throw new Error(statusData.message || 'Unknown API error for status');
+                    }
+                    this.setConnectionStatus(infoData.device_status === 'connected', statusData.wan_ip); // Pass WAN IP here
+
                     this.resetRefreshTimer(); // Reset countdown after successful fetch
 
                 } catch (error) {
                     console.error('Error fetching data:', error);
-                    this.setConnectionStatus(false);
+                    this.setConnectionStatus(false, '-'); // Indicate disconnection and no IP
                     // If connection fails, we keep the existing data and countdown
                     // The timer will continue, and another fetch will be attempted.
                 }
@@ -1027,16 +1098,27 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                 element.style.color = color;
             }
 
-            // Sets the visual status (dot and text) for connection
-            setConnectionStatus(connected) {
+            // Sets the visual status (dot, text, and IP) for connection
+            setConnectionStatus(connected, wanIp) {
                 if (connected) {
                     this.statusText.textContent = 'Đã kết nối';
                     this.statusDot.classList.remove('disconnected', 'warning');
                     this.statusDot.classList.add('connected');
+                    // Display WAN IP if provided
+                    if (wanIp && wanIp !== '-') {
+                         this.wanIpDisplay.textContent = `(${wanIp})`;
+                         this.wanIpDisplay.style.display = 'inline'; // Make sure it's visible
+                    } else {
+                         this.wanIpDisplay.textContent = '';
+                         this.wanIpDisplay.style.display = 'none'; // Hide if no IP
+                    }
+
                 } else {
                     this.statusText.textContent = 'Mất kết nối';
                     this.statusDot.classList.remove('connected', 'warning');
                     this.statusDot.classList.add('disconnected');
+                    this.wanIpDisplay.textContent = ''; // Clear IP on disconnect
+                    this.wanIpDisplay.style.display = 'none'; // Hide the IP display
                 }
             }
 
@@ -1123,6 +1205,8 @@ cat > "$WEB_DIR/index.html" << 'EOF'
                     this.statusText.textContent = 'Tự động làm mới đã dừng';
                     this.statusDot.classList.remove('connected', 'disconnected');
                     this.statusDot.classList.add('warning'); // Use warning color for paused state
+                    this.wanIpDisplay.textContent = ''; // Clear IP when paused
+                    this.wanIpDisplay.style.display = 'none';
                 }
             }
             
