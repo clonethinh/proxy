@@ -1,0 +1,251 @@
+#!/bin/sh
+
+echo "Content-Type: application/json"
+echo ""
+
+DEVICE="/dev/ttyUSB0"
+
+# ==== HÀM PHỤ ====
+
+get_at_response() {
+    CMD="$1"
+    FILTER="$2"
+    sms_tool -d "$DEVICE" at "$CMD" > /tmp/at_resp.txt 2>/dev/null
+    grep "$FILTER" /tmp/at_resp.txt | tail -1
+}
+
+get_single_line_value() {
+    CMD="$1"
+    sms_tool -d "$DEVICE" at "$CMD" 2>/dev/null | grep -vE '^(AT|\s*OK|\s*$)' | head -1 | tr -d '\r\n '
+}
+
+get_imsi() {
+    get_single_line_value "AT+CIMI"
+}
+
+get_iccid() {
+    sms_tool -d "$DEVICE" at "AT+ICCID" 2>/dev/null | grep -i "ICCID" | awk -F: '{print $2}' | tr -d '\r\n "'
+}
+
+sanitize_string() {
+    [ -z "$1" ] && echo "-" || echo "$1" | tr -d '\r\n'
+}
+
+sanitize_number() {
+    [ -z "$1" ] && echo "-" || echo "$1"
+}
+
+get_connection_status() {
+    IFACE=$(ip route | awk '/default/ {print $5}' | head -1)
+    WAN_IP=$(ip addr show "$IFACE" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
+    if [ -z "$WAN_IP" ] || echo "$WAN_IP" | grep -qE '^(0\.0\.0\.0|169\.)'; then
+        echo "disconnected"
+    else
+        echo "connected"
+    fi
+}
+
+# ==== GSTATUS CHÍNH ====
+O=$(sms_tool -d "$DEVICE" at "AT!GSTATUS?" 2>/dev/null)
+
+# ==== THÔNG TIN MODEM ====
+MODEL=$(sms_tool -d "$DEVICE" at "AT+CGMM" 2>/dev/null | grep -v -e '^AT' -e '^OK' -e '^$' | head -n1 | tr -d '\r\n')
+FW=$(sms_tool -d "$DEVICE" at "AT+CGMR" 2>/dev/null | grep -v -e '^AT' -e '^OK' -e '^$' | head -n1 | awk '{print $1}')
+IMEI=$(sanitize_string "$(get_single_line_value 'AT+CGSN')")
+IMSI=$(sanitize_string "$(get_imsi)")
+ICCID=$(sanitize_string "$(get_iccid)")
+
+
+# ==== NHIỆT ĐỘ, MODE ====
+TEMP=$(echo "$O" | awk -F: '/Temperature:/ {print $3}' | xargs)
+SYS_MODE=$(echo "$O" | awk '/^System mode:/ {print $3}')
+case "$SYS_MODE" in
+    "LTE") MODE="LTE" ;;
+    "ENDC") MODE="5G NSA" ;;
+    *) MODE="-" ;;
+esac
+
+# ==== TAC ====
+TAC_HEX=$(echo "$O" | awk '/.*TAC:/ {print $6}')
+[ -n "$TAC_HEX" ] && TAC_DEC=$(printf "%d" "0x$TAC_HEX")
+
+# ==== CID, LAC, PCI ====
+CID_HEX=$(echo "$O" | awk '/.*TAC:/ {gsub(/[()]/, "", $7); print $7}' )
+[ -n "$CID_HEX" ] && CID_DEC=$(printf "%d" "0x$CID_HEX")
+PCI=$(echo "$O" | awk '/.*TAC:/ {print $8}' | sed 's/[,)]//g')
+
+# ==== TÍN HIỆU ====
+RSRP=$(echo "$O" | awk '/^PCC/ && /RSRP/ {print $8}' | head -1 | xargs)
+RSSI=$(echo "$O" | awk '/^PCC/ && /RSSI/ {print $4}' | head -1 | xargs)
+RSRQ=$(echo "$O" | grep "^RSRQ" | awk '{print $3}')
+SINR=$(echo "$O" | grep "^SINR" | awk '{print $3}')
+[ -z "$RSRQ" ] && RSRQ="-"
+[ -z "$SINR" ] && SINR="-"
+
+
+# ==== BĂNG TẦN CHÍNH ====
+BAND=$(echo "$O" | awk '/^LTE band:/ {print $3}')
+FREQ=$(echo "$O" | awk '/^LTE band:/ {print $6}')
+PBAND="B${BAND/B/} @${FREQ} MHz"
+MODE="$MODE B${BAND/B/}"
+
+# ==== SCC BANDS ====
+get_band_string() {
+    echo -n "B$1"
+    case "$1" in
+        "1") echo -n " (2100 MHz)";;
+        "3") echo -n " (1800 MHz)";;
+        "7") echo -n " (2600 MHz)";;
+        "8") echo -n " (900 MHz)";;
+        "20") echo -n " (800 MHz)";;
+        "28") echo -n " (700 MHz)";;
+        "40") echo -n " (2300 MHz)";;
+        *) echo -n "";;
+    esac
+}
+
+get_country_from_mcc() {
+    case "$1" in
+        452) echo "Việt Nam" ;;
+        310) echo "USA" ;;
+        262) echo "Germany" ;;
+        *) echo "-" ;;
+    esac
+}
+
+get_scc_band() {
+    SCC_NO="$1"
+    ACTIVE=$(echo "$O" | awk -F: "/^LTE SCC${SCC_NO} state:.*ACTIVE/ {print \$3}")
+    if [ -n "$ACTIVE" ]; then
+        BW=$(echo "$O" | awk "/^LTE SCC${SCC_NO} bw/ {print \$5}")
+        BSTR="B${ACTIVE/B/}"
+        MODE="${MODE/LTE/LTE-A} + $BSTR"
+        echo "$(get_band_string ${ACTIVE/B/}) @$BW MHz"
+    else
+        echo "-"
+    fi
+}
+
+S1BAND=$(get_scc_band 1)
+S2BAND=$(get_scc_band 2)
+S3BAND=$(get_scc_band 3)
+
+# ==== 5G NR ====
+NRBAND=$(echo "$O" | awk '/^SCC. NR5G band:/ {print $4}')
+if [ -n "$NRBAND" ] && [ "$NRBAND" != "---" ]; then
+    MODE="$MODE + n${NRBAND/n/}"
+    NR_RSRP=$(echo "$O" | awk '/SCC. NR5G RSRP:/ {print $4}')
+    NR_RSRQ=$(echo "$O" | awk '/SCC. NR5G RSRQ:/ {print $4}')
+    NR_SINR=$(echo "$O" | awk '/SCC. NR5G SINR:/ {print $4}')
+    [ -n "$NR_RSRP" ] && RSRP="$NR_RSRP"
+    [ -n "$NR_RSRQ" ] && RSRQ="$NR_RSRQ"
+    [ -n "$NR_SINR" ] && SINR="$NR_SINR"
+fi
+
+# ==== CSQ ====
+CSQ_LINE=$(get_at_response "AT+CSQ" "+CSQ")
+CSQ=$(echo "$CSQ_LINE" | awk -F: '{print $2}' | awk -F, '{print $1}' | tr -d ' ')
+if [ -n "$CSQ" ] && [ "$CSQ" -ne 99 ]; then
+    CSQ_PER=$(expr $CSQ \* 100 / 31)
+else
+    CSQ="0"
+    CSQ_PER="0"
+fi
+
+# ==== COPS (lấy MCC/MNC đúng) ====
+sms_tool -d "$DEVICE" at "AT+COPS=3,2" > /dev/null 2>&1
+COPS_LINE=$(get_at_response "AT+COPS?" "+COPS")
+COPS_NUM=$(echo "$COPS_LINE" | grep -oE '[0-9]{5,6}' | head -1)
+
+case "$COPS_NUM" in
+    "45202") COPS="Vinaphone";;
+    "45201") COPS="Mobifone";;
+    "45204") COPS="Viettel";;
+    *)       COPS="Unknown";;
+esac
+
+COPS_MCC=$(echo "$COPS_NUM" | cut -c1-3)
+COPS_MNC=$(echo "$COPS_NUM" | cut -c4-)
+
+# ==== CREG ====
+CREG_LINE=$(get_at_response "AT+CREG?" "+CREG")
+REG_STATUS=$(echo "$CREG_LINE" | awk -F, '{print $2}' | tr -d ' ')
+
+# ==== EARFCN ====
+EARFCN=$(echo "$O" | awk '/^LTE Rx chan:/ {print $4}')
+
+# ==== PROTOCOL ====
+PROTO_INFO=$(awk '/Vendor=1199 ProdID=90d3/{f=1} f && /Driver=/{print; f=0}' /sys/kernel/debug/usb/devices 2>/dev/null)
+case "$PROTO_INFO" in
+    *qmi_wwan*) PROTO="qmi";;
+    *cdc_mbim*) PROTO="mbim";;
+    *cdc_ether*) PROTO="ecm";;
+    *) PROTO="qmi";;
+esac
+
+# Lấy thông tin interface logic (tên trong /etc/config/network)
+IFNAME="5G"
+
+# Lấy thiết bị vật lý (ví dụ wwan0)
+IFACE=$(ifstatus "$IFNAME" 2>/dev/null | jsonfilter -e '@.l3_device')
+
+# Lấy IP WAN (ưu tiên dùng ubus cho chuẩn)
+IP_WAN=$(ubus call network.interface.$IFNAME status | jsonfilter -e '@["ipv4-address"][0].address')
+[ -z "$IP_WAN" ] && IP_WAN="-"
+
+# Lấy thời gian hoạt động (uptime) chính xác từ ifstatus (đơn vị: giây)
+UPTIME=$(ifstatus "$IFNAME" 2>/dev/null | jsonfilter -e '@.uptime')
+[ -z "$UPTIME" ] && UPTIME=0  # fallback nếu lỗi
+
+# Chuyển uptime sang hh:mm:ss
+CONN_TIME=$(printf "%02d:%02d:%02d" $((UPTIME/3600)) $((UPTIME%3600/60)) $((UPTIME%60)))
+
+# Kiểm tra kết nối
+if [ "$IP_WAN" = "-" ]; then
+    STATUS="disconnected"
+else
+    STATUS="connected"
+fi
+
+
+# ==== IN JSON ====
+cat << JSONEOF
+{
+    "conn_time": "$(sanitize_string "$CONN_TIME")",
+    "rx": "$(sanitize_number "$RX_BYTES")",
+    "tx": "$(sanitize_number "$TX_BYTES")",
+    "status": "$(sanitize_string "$STATUS")",
+    "ip_wan": "$(sanitize_string "$IP_WAN")",
+    "modem": "Sierra Wireless AirPrime EM9190 5G NR",
+    "mtemp": "$(sanitize_string "$TEMP")",
+    "firmware": "SWIX55C_03.10.07.00",
+    "cport": "$(sanitize_string "$DEVICE")",
+    "protocol": "$(sanitize_string "$PROTO")",
+    "csq": "$(sanitize_number "$CSQ")",
+    "signal": "$(sanitize_number "$CSQ_PER")",
+    "operator_name": "$(sanitize_string "$COPS")",
+    "operator_mcc": "$(sanitize_string "$COPS_MCC")",
+    "operator_mnc": "$(sanitize_string "$COPS_MNC")",
+    "location": "$(get_country_from_mcc "$COPS_MCC")",
+    "mode": "$(sanitize_string "$MODE")",
+    "registration": "$(sanitize_string "$REG_STATUS")",
+    "imei": "$(sanitize_string "$IMEI")",
+    "imsi": "$(sanitize_string "$IMSI")",
+    "iccid": "$(sanitize_string "$ICCID")",
+    "lac_dec": "$(sanitize_number "$TAC_DEC")",
+    "lac_hex": "$(sanitize_string "$TAC_HEX")",
+    "cid_dec": "$(sanitize_number "$CID_DEC")",
+    "cid_hex": "$(sanitize_string "$CID_HEX")",
+    "pci": "$(sanitize_number "$PCI")",
+    "earfcn": "$(sanitize_number "$EARFCN")",
+    "pband": "$(sanitize_string "$PBAND")",
+    "s1band": "$(sanitize_string "$S1BAND")",
+    "s2band": "$(sanitize_string "$S2BAND")",
+    "s3band": "$(sanitize_string "$S3BAND")",
+    "rsrp": "$(sanitize_number "$RSRP")",
+    "rsrq": "$(sanitize_number "$RSRQ")",
+    "rssi": "$(sanitize_number "$RSSI")",
+    "sinr": "$(sanitize_number "$SINR")"
+}
+JSONEOF
+
