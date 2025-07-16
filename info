@@ -66,13 +66,26 @@ case "$SYS_MODE" in
 esac
 
 # ==== TAC ====
-TAC_HEX=$(echo "$O" | awk '/.*TAC:/ {print $6}')
-[ -n "$TAC_HEX" ] && TAC_DEC=$(printf "%d" "0x$TAC_HEX")
+TAC_HEX=$(echo "$O" | awk '/.*TAC:/ {print $6}' | tr -d '\r\n ')
+if [ -n "$TAC_HEX" ]; then
+    TAC_DEC=$(printf "%d" "0x$TAC_HEX" 2>/dev/null || echo "-")
+else
+    TAC_DEC="-"
+    TAC_HEX="-"
+fi
 
 # ==== CID, LAC, PCI ====
-CID_HEX=$(echo "$O" | awk '/.*TAC:/ {gsub(/[()]/, "", $7); print $7}' )
-[ -n "$CID_HEX" ] && CID_DEC=$(printf "%d" "0x$CID_HEX")
-PCI=$(echo "$O" | awk '/.*TAC:/ {print $8}' | sed 's/[,)]//g')
+CID_HEX=$(echo "$O" | awk '/.*TAC:/ {gsub(/[()]/, "", $7); print $7}' | tr -d '\r\n ')
+if [ -n "$CID_HEX" ]; then
+    CID_DEC=$(printf "%d" "0x$CID_HEX" 2>/dev/null || echo "-")
+else
+    CID_DEC="-"
+    CID_HEX="-"
+fi
+
+PCI=$(echo "$O" | awk '/.*TAC:/ {print $8}' | sed 's/[,)]//g' | tr -d '\r\n ')
+[ -z "$PCI" ] && PCI="-"
+
 
 # ==== TÍN HIỆU ====
 RSRP=$(echo "$O" | awk '/^PCC/ && /RSRP/ {print $8}' | head -1 | xargs)
