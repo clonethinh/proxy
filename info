@@ -213,6 +213,10 @@ UPTIME=$(ifstatus "$IFNAME" 2>/dev/null | jsonfilter -e '@.uptime')
 # Chuyển uptime sang hh:mm:ss
 CONN_TIME=$(printf "%02d:%02d:%02d" $((UPTIME/3600)) $((UPTIME%3600/60)) $((UPTIME%60)))
 
+# Lấy Rx/Tx bytes
+RX_BYTES=$(cat /sys/class/net/$IFACE/statistics/rx_bytes 2>/dev/null || echo "0")
+TX_BYTES=$(cat /sys/class/net/$IFACE/statistics/tx_bytes 2>/dev/null || echo "0")
+
 # Kiểm tra kết nối
 if [ "$IP_WAN" = "-" ]; then
     STATUS="disconnected"
